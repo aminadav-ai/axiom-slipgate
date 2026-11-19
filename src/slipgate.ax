@@ -1,7 +1,9 @@
 // ============================================================================
-// AXIOM SLIPGATE (1996-Style Dark-Industrial 3D FPS — "Slipgate Complex")
+// AXIOM SLIPGATE v2.0 GPU HD — True 3D Polygonal Engine (Axiom.Strata + Gpu)
 // 100% Clean-Room Original IP • Written 100% in Axiom (Telos + Flux + Strata)
-// Compiles directly to standalone W3C WebAssembly (.wasm) with ZERO rustc!
+// Builds 256x256 Worley/FBM Bump-Mapped Textures, Multi-Level 3D Architecture,
+// Slatted Sky Bridges, Diagonal Timber Rafters, 3D Shambler/Knight/Grunt Meshes
+// & 3D Twin-Barrel Super-Shotgun directly in Linear Memory — ZERO rustc!
 // ============================================================================
 
 // --- Layer 1: Axiom.Telos Mathematically Verified Pure Kernels (Z3 SMT) ---
@@ -27,342 +29,1325 @@ fn clamp_stat(v: i64, max_v: i64) -> i64
   }
 }
 
+fn clamp_pitch(p: i64) -> i64
+  ens result >= -700 && result <= 700
+{
+  if p < -700 {
+    -700
+  } else {
+    if p > 700 { 700 } else { p }
+  }
+}
+
 fn abs_val(v: i64) -> i64
   ens result >= 0
 {
   if v < 0 { -v } else { v }
 }
 
-fn map_idx(mx: i64, my: i64) -> i64
-  req mx >= 0 && mx < 24 && my >= 0 && my < 24
-  ens result >= 0 && result < 576
+fn isqrt_24bit(n: i64) -> i64
+  ens result >= 0
 {
-  my * 24 + mx
+  if n <= 0 {
+    0
+  } else {
+    let mut x = n;
+    let mut res = 0;
+    let mut bit = 16777216;
+    while bit > x max 14 {
+      bit = bit >> 2;
+    }
+    while bit > 0 max 14 {
+      if x >= res + bit {
+        x = x - (res + bit);
+        res = (res >> 1) + bit;
+      } else {
+        res = res >> 1;
+      };
+      bit = bit >> 2;
+    }
+    if res < 0 { 0 } else { res }
+  }
 }
 
-fn tex_addr(tid: i64, tx: i64, ty: i64) -> i64
+fn tex256_addr(tid: i64, tx: i64, ty: i64) -> i64
   req tid >= 0 && tid < 8
 {
-  4096 + tid * 4096 + ((ty & 63) * 64) + (tx & 63)
+  65536 + tid * 65536 + ((ty & 255) << 8) + (tx & 255)
 }
 
 fn enemy_addr(eid: i64) -> i64
-  req eid >= 0 && eid < 8
-  ens result >= 1400 && result < 1528
+  req eid >= 0 && eid < 10
+  ens result >= 6000 && result < 6200
 {
-  1400 + eid * 12
+  6000 + eid * 16
 }
 
 fn item_addr(iid: i64) -> i64
-  req iid >= 0 && iid < 8
-  ens result >= 1600 && result < 1696
+  req iid >= 0 && iid < 10
+  ens result >= 6500 && result < 6600
 {
-  1600 + iid * 8
+  6500 + iid * 8
 }
 
 fn snap_addr(slot: i64) -> i64
   req slot >= 0 && slot < 120
-  ens result >= 40000 && result < 60000
+  ens result >= 10000 && result < 45000
 {
-  40000 + slot * 160
+  10000 + slot * 240
 }
 
 fn compute_fps_score(kills: i64, hp_left: i64, slipgate_bonus: i64) -> i64
-  req kills >= 0 && kills <= 8 && hp_left >= 0 && hp_left <= 100 && slipgate_bonus >= 0 && slipgate_bonus <= 1000
-  ens result >= 0 && result <= 4000
+  req kills >= 0 && kills <= 10 && hp_left >= 0 && hp_left <= 100 && slipgate_bonus >= 0 && slipgate_bonus <= 1500
+  ens result >= 0 && result <= 5000
 {
   kills * 250 + hp_left * 5 + slipgate_bonus
 }
 
-fn pack_rgba(r: i64, g: i64, b: i64) -> i64 {
+fn pack_rgba_h(r: i64, g: i64, b: i64, h: i64) -> i64 {
   let cr = clamp_byte(r);
   let cg = clamp_byte(g);
   let cb = clamp_byte(b);
-  (255 << 24) | (cb << 16) | (cg << 8) | cr
+  let ch = clamp_byte(h);
+  (ch << 24) | (cb << 16) | (cg << 8) | cr
 }
 
-// --- Layer 3: Axiom.Strata Linear Memory Map ---
-//   0: tick            1: px (1024/tile)  2: py (1024/tile)  3: pang (0..1023)
-//   4: health          5: armor           6: ammo            7: kills
-//   8: score           9: muzzle_timer   10: recoil_timer   11: hurt_flash
-//  12: pickup_flash   13: bob_phase      14: game_state     15: sfx_mask
-//  16: snap_head      17: snap_count     18: rng_state      19: slime_tick
-//  128..703:   24x24 Wall Map (0=open, 1=TechIron, 2=Brownstone, 3=CopperDoor, 4=TorchWall, 5=ExitSlipgate)
-//  704..1279:  24x24 Floor Sector Map (0=IronGrate, 1=RadioactiveSlime, 2=StormSkyCourtyard)
-// 1400..1495:  8 Enemies * 12 words (x, y, kind, hp, state, cooldown, hit_flash, anim)
-// 1600..1663:  8 Pickups * 8 words (x, y, kind, active)
-// 2048..3071:  1024-entry Fixed-Point Sin Table (-1024..1024)
-// 3200..3919:  720-column Z-Buffer (`perp_dist`)
-// 3920..3950:  Enemy depth-sort scratch
-// 4096..36863: 8 Procedural 64x64 24-bit Textures
-// 40000..59199: 120 Time-Travel Combat Snapshots * 160 words
-// 65536..389535: 720x450 Widescreen RGBA Framebuffer (byte offset = 262144)
+fn pack_norm(nx: i64, ny: i64, nz: i64) -> i64 {
+  let bx = clamp_byte(nx + 128);
+  let by = clamp_byte(ny + 128);
+  let bz = clamp_byte(nz + 128);
+  bx | (by << 8) | (bz << 16)
+}
+
+// --- Layer 3: Axiom.Strata 8 MiB Linear Memory Layout ---
+//   0: tick             1: cam_x            2: cam_y            3: cam_z
+//   4: yaw (0..4095)    5: pitch (-700..700) 6: foot_y          7: vel_y
+//   8: health           9: armor           10: ammo            11: kills
+//  12: score           13: muzzle_timer    14: recoil_timer    15: hurt_flash
+//  16: pickup_flash    17: bob_phase       18: game_state      19: sfx_mask
+//  20: static_v_cnt    21: dyn_v_cnt       22: gun_v_cnt       23: light_cnt
+//  24: snap_head       25: snap_count      26: rng_state       27: on_ground
+//  28: sector_cnt      29: wall_box_cnt
+// 512..4607:     4096-entry Sine Table (-1024..1024)
+// 5000..5399:    Walkable Floor/Stair/Bridge Sectors (50 * 8 words: x0, z0, x1, z1, floor_y, ceil_y, kind, pad)
+// 5400..5959:    Solid 3D Wall/Pillar Colliders (70 * 8 words: x0, z0, x1, z1, y0, y1, pad, pad)
+// 6000..6159:    10 Articulated 3D Monsters * 16 words (x, y, z, kind, hp, state, cd, flash, anim, yaw, start_y, pad...)
+// 6500..6579:    10 3D Pickups * 8 words (x, y, z, kind, active)
+// 6800..7311:    64 3D Particles * 8 words (x, y, z, vx, vy, vz, rgb, life)
+// 8000..8191:    24 Dynamic 3D Point Lights * 8 words (x, y, z, radius, r, g, b, flicker)
+// 10000..38799:  120 Combat Time-Travel Snapshots * 240 words
+// 65536..589823: 8 Procedural 256x256 Albedo+Heightmap Textures (byte offset 262,144; 2 MiB)
+// 600000..1399999: Static 3D World Vertex Buffer (8 words = 32 bytes/vertex; byte offset 2,400,000)
+// 1400000..1849999: Dynamic 3D Monster/Pickup/Particle Vertex Buffer (byte offset 5,600,000)
+// 1850000..2049999: 3D Super-Shotgun Viewmodel Vertex Buffer (byte offset 7,400,000)
 
 fn next_rand() -[Mem]-> i64 {
-  let s = mem_load(18);
+  let s = mem_load(26);
   let nxt = (s * 1103515245 + 12345) & 0x7FFFFFFF;
-  let safe = if nxt == 0 { 7654321 } else { nxt };
-  mem_store(18, safe);
+  let safe = if nxt == 0 { 9182736 } else { nxt };
+  mem_store(26, safe);
   safe
 }
 
 fn fast_sin(ang: i64) -[Mem]-> i64 {
-  mem_load(2048 + (ang & 1023))
+  mem_load(512 + (ang & 4095))
 }
 
 fn fast_cos(ang: i64) -[Mem]-> i64 {
-  mem_load(2048 + ((ang + 256) & 1023))
+  mem_load(512 + ((ang + 1024) & 4095))
 }
 
-// Bhaskara I's high-accuracy rational sine table (`0..1023` -> `-1024..1024`)
-fn init_trig_tables() -[Mem]-> unit {
+fn init_trig_4096() -[Mem]-> unit {
   let mut i = 0;
-  while i < 512 max 512 {
-    let p = i * (512 - i);
-    let denom = 1310720 - 4 * p;
-    let s = if denom > 0 { (16 * p * 1024) / denom } else { 0 };
-    mem_store(2048 + i, s);
-    mem_store(2048 + 512 + i, -s);
+  while i < 2048 max 2048 {
+    let p = i * (2048 - i);
+    // Bhaskara rational sine scaled to 2048 half-turn -> -1024..1024
+    let p_shr = p >> 8;
+    let denom = 81920 - ((4 * p) >> 8);
+    let s = if denom > 0 { (16 * p_shr * 1024) / denom } else { 0 };
+    mem_store(512 + i, s);
+    mem_store(512 + 2048 + i, -s);
     i = i + 1;
   }
 }
 
-// Bake 8 rich 1996-era Dark-Industrial & Gothic 64x64 textures in pure math!
-fn bake_procedural_textures() -[Mem]-> unit {
-  let mut ty = 0;
-  while ty >= 0 && ty < 64 max 64 {
-    let mut tx = 0;
-    while tx >= 0 && tx < 64 max 64 {
-      let grit = (((tx * 73 ^ ty * 149) + tx * ty) >> 2) & 15;
+// --- Seamless Multi-Octave FBM & Worley Stone/Timber Texture Synthesis (256x256) ---
 
-      // Tex 0 (Wall 1): Riveted Rusted Tech-Base Iron Panels
-      let seam = tx == 0 || ty == 0 || ty == 32 || tx == 32;
-      let bevel_hi = tx == 1 || ty == 1 || ty == 33 || tx == 33;
-      let rivet = ((tx & 31) == 4 || (tx & 31) == 27) && ((ty & 31) == 4 || (ty & 31) == 27);
-      let rust = ((tx * 13 + ty * 29) >> 4) & 7;
-      let t0_r = if seam { 26 } else { if bevel_hi { 112 } else { if rivet { 138 } else { 78 + grit - rust } } };
-      let t0_g = if seam { 24 } else { if bevel_hi { 98 } else { if rivet { 124 } else { 68 + (grit * 2) / 3 - rust } } };
-      let t0_b = if seam { 22 } else { if bevel_hi { 84 } else { if rivet { 108 } else { 58 + grit / 2 - rust } } };
-      mem_store(tex_addr(0, tx, ty), pack_rgba(t0_r, t0_g, t0_b));
+fn hash2d_wrap(ix: i64, iy: i64, mask: i64, seed: i64) -> i64 {
+  let wx = ix & mask;
+  let wy = iy & mask;
+  let h1 = wx * 374761 + wy * 668265 + seed * 144269;
+  let h2 = (h1 ^ (h1 >> 11)) * 12741261;
+  (h2 >> 16) & 255
+}
 
-      // Tex 1 (Wall 2): Weathered Gothic Brownstone Masonry with Deep Mortar & Moss
-      let brick_row = ty >> 4;
-      let bx = (tx + (brick_row & 1) * 16) & 31;
-      let by = ty & 15;
-      let mortar = bx == 0 || by == 0 || by == 15;
-      let moss = if ty > 44 && ((tx * 19 ^ ty * 41) & 7) == 0 { 1 } else { 0 };
-      let stone_var = ((brick_row * 37 + ((tx + (brick_row & 1) * 16) >> 5) * 53) & 15) - 7;
-      let t1_r = if mortar { 32 } else { if moss == 1 { 48 } else { 96 + stone_var + grit / 2 } };
-      let t1_g = if mortar { 28 } else { if moss == 1 { 82 } else { 76 + stone_var + grit / 2 } };
-      let t1_b = if mortar { 24 } else { if moss == 1 { 44 } else { 58 + stone_var / 2 + grit / 3 } };
-      mem_store(tex_addr(1, tx, ty), pack_rgba(t1_r, t1_g, t1_b));
+fn smooth_noise_256(x: i64, y: i64, shift: i64, seed: i64) -> i64 {
+  let step = 1 << shift;
+  let mask = (256 >> shift) - 1;
+  let ix = x >> shift;
+  let iy = y >> shift;
+  let fx = ((x & (step - 1)) << 8) >> shift;
+  let fy = ((y & (step - 1)) << 8) >> shift;
+  let ux = (fx * fx * (768 - (fx << 1))) >> 16;
+  let uy = (fy * fy * (768 - (fy << 1))) >> 16;
 
-      // Tex 2 (Wall 3): Stained Copper Trim & Hazard Ribs
-      let rib = (ty & 7) < 2;
-      let stripe = if ty >= 24 && ty < 40 { ((tx + ty) >> 3) & 1 } else { 2 };
-      let t2_r = if stripe == 1 { 176 + grit } else { if stripe == 0 { 38 } else { if rib { 52 } else { 116 + grit } } };
-      let t2_g = if stripe == 1 { 132 + grit } else { if stripe == 0 { 34 } else { if rib { 42 } else { 78 + grit / 2 } } };
-      let t2_b = if stripe == 1 { 42 } else { if stripe == 0 { 30 } else { if rib { 36 } else { 52 + grit / 3 } } };
-      mem_store(tex_addr(2, tx, ty), pack_rgba(t2_r, t2_g, t2_b));
+  let c00 = hash2d_wrap(ix, iy, mask, seed);
+  let c10 = hash2d_wrap(ix + 1, iy, mask, seed);
+  let c01 = hash2d_wrap(ix, iy + 1, mask, seed);
+  let c11 = hash2d_wrap(ix + 1, iy + 1, mask, seed);
 
-      // Tex 3 (Wall 4): Gothic Torch Alcove with Glowing Amber Flame!
-      let dx_c = tx - 32;
-      let dy_c = ty - 28;
-      let in_alcove = abs_val(dx_c) < 12 && ty >= 12 && ty <= 50;
-      let flame_d = dx_c * dx_c * 2 + dy_c * dy_c;
-      let is_flame = flame_d < 110 && ty <= 34;
-      let is_sconce = abs_val(dx_c) <= 4 && ty > 34 && ty <= 48;
-      let t3_r = if is_flame { 255 } else { if is_sconce { 58 } else { if in_alcove { 46 + grit } else { t1_r } } };
-      let t3_g = if is_flame { 215 - flame_d } else { if is_sconce { 46 } else { if in_alcove { 36 + grit / 2 } else { t1_g } } };
-      let t3_b = if is_flame { 68 } else { if is_sconce { 38 } else { if in_alcove { 28 } else { t1_b } } };
-      mem_store(tex_addr(3, tx, ty), pack_rgba(t3_r, t3_g, t3_b));
+  let nx0 = c00 + (((c10 - c00) * ux) >> 8);
+  let nx1 = c01 + (((c11 - c01) * ux) >> 8);
+  nx0 + (((nx1 - nx0) * uy) >> 8)
+}
 
-      // Tex 4 (Wall 5): Swirling Runic Exit Slipgate Portal!
-      let pdx = tx - 32;
-      let pdy = ty - 32;
-      let pr2 = pdx * pdx + pdy * pdy;
-      let frame_arch = abs_val(pdx) >= 22 || ty < 8;
-      let rune_ring = pr2 >= 280 && pr2 <= 460;
-      let swirl = ((pdx * 7 + pdy * 11 + pr2 / 6) >> 2) & 31;
-      let t4_r = if frame_arch { 128 + grit } else { if rune_ring { 250 } else { 110 + swirl * 4 } };
-      let t4_g = if frame_arch { 96 + grit / 2 } else { if rune_ring { 196 } else { 40 + swirl * 3 } };
-      let t4_b = if frame_arch { 64 } else { if rune_ring { 68 } else { 195 + swirl * 2 } };
-      mem_store(tex_addr(4, tx, ty), pack_rgba(t4_r, t4_g, t4_b));
+fn fbm4_256(x: i64, y: i64, seed: i64) -> i64 {
+  let n0 = smooth_noise_256(x, y, 5, seed);
+  let n1 = smooth_noise_256(x, y, 4, seed + 17);
+  let n2 = smooth_noise_256(x, y, 3, seed + 43);
+  let n3 = smooth_noise_256(x, y, 2, seed + 89);
+  (n0 * 116 + n1 * 72 + n2 * 44 + n3 * 24) >> 8
+}
 
-      // Tex 5 (Floor 0): Industrial Diamond Metal Grate & Dark Flagstone
-      let f_seam = (tx & 15) == 0 || (ty & 15) == 0;
-      let mesh = ((tx + ty) & 3) == 0 && ((tx - ty) & 3) == 0;
-      let f_r = if f_seam { 30 } else { if mesh { 74 + grit / 2 } else { 54 + grit / 2 } };
-      let f_g = if f_seam { 28 } else { if mesh { 68 + grit / 2 } else { 50 + grit / 2 } };
-      let f_b = if f_seam { 26 } else { if mesh { 62 + grit / 2 } else { 46 + grit / 2 } };
-      mem_store(tex_addr(5, tx, ty), pack_rgba(f_r, f_g, f_b));
+fn bake_hd_textures() -[Mem]-> unit {
+  let mut y = 0;
+  while y >= 0 && y < 256 max 256 {
+    let mut x = 0;
+    while x >= 0 && x < 256 max 256 {
+      let fbm_a = fbm4_256(x, y, 11);
+      let fbm_b = fbm4_256(x, y, 59);
+      let fine = smooth_noise_256(x, y, 1, 103);
 
-      // Tex 6 (Floor 1): Glowing Radioactive Green Acid Slime!
-      let wave = ((tx * 9 + ty * 7) ^ (tx * 3 - ty * 5)) & 31;
-      let s_r = 38 + wave * 2;
-      let s_g = 135 + wave * 3;
-      let s_b = 32 + wave;
-      mem_store(tex_addr(6, tx, ty), pack_rgba(s_r, s_g, s_b));
+      // ----------------------------------------------------------------------
+      // TEX 0: Wild Canyon Masonry & Sunlit Craggy Sandstone (Screenshot 2!)
+      // Irregular staggered courses, chipped joints, moss & rich heightmap!
+      // ----------------------------------------------------------------------
+      let warp_y = y + ((fbm_a - 128) >> 4);
+      let course = (warp_y >> 5) & 7; // 8 irregular courses per 256px
+      let fy_in = warp_y & 31;
+      let row_shift = hash2d_wrap(course, 3, 7, 21) >> 2;
+      let warp_x = x + row_shift + ((fbm_b - 128) >> 4);
+      let col_w = 48;
+      let stone_id = (warp_x / col_w) & 7;
+      let fx_in = warp_x - (warp_x / col_w) * col_w;
 
-      // Tex 7 (Ceiling): Vaulted Ribbed Iron & Dark Indigo Tempest Clouds
-      let beam = (tx & 31) < 3 || (ty & 31) < 3;
-      let c_r = if beam { 38 } else { 54 + grit / 2 };
-      let c_g = if beam { 34 } else { 44 + grit / 2 };
-      let c_b = if beam { 40 } else { 66 + grit };
-      mem_store(tex_addr(7, tx, ty), pack_rgba(c_r, c_g, c_b));
+      let d_top = fy_in;
+      let d_bot = 31 - fy_in;
+      let d_left = fx_in;
+      let d_right = col_w - 1 - fx_in;
+      let min_v = if d_top < d_bot { d_top } else { d_bot };
+      let min_h = if d_left < d_right { d_left } else { d_right };
+      let edge_d = if min_v < min_h { min_v } else { min_h };
 
-      tx = tx + 1;
+      let stone_tint = (hash2d_wrap(stone_id, course, 7, 77) & 31) - 14;
+      let crag = (((fbm_a * 3 + fine) >> 2) - 128) * 3 / 2;
+      let min_g = (fbm_b - 128) >> 3;
+      let min_b = (fine - 128) >> 3;
+      let is_mortar = edge_d <= 2;
+      let bevel = if edge_d >= 8 { 256 } else { edge_d * 32 };
+      let moss_patch = fbm_b > 160 && d_top < 10;
+
+      let h0 = if is_mortar {
+        8
+      } else {
+        clamp_byte(((168 + (crag * 2) / 3) * bevel) >> 8)
+      };
+      let r0 = if is_mortar {
+        34 + (min_b >> 1)
+      } else {
+        if moss_patch { 76 + (fine >> 4) } else { 174 + stone_tint + (crag >> 2) }
+      };
+      let g0 = if is_mortar {
+        29 + (min_g >> 1)
+      } else {
+        if moss_patch { 102 + min_g } else { 142 + (stone_tint * 3) / 4 + (crag >> 2) + min_g }
+      };
+      let b0 = if is_mortar {
+        24
+      } else {
+        if moss_patch { 52 + (min_b >> 1) } else { 100 + stone_tint / 2 + (crag >> 3) + min_b }
+      };
+      mem_store(tex256_addr(0, x, y), pack_rgba_h(r0, g0, b0, h0));
+
+      // ----------------------------------------------------------------------
+      // TEX 1: Dark Gothic Castle Ashlar & Mossy Dungeon Stone (Screenshot 3!)
+      // ----------------------------------------------------------------------
+      let g_row = (y >> 4) & 15;
+      let g_by = y & 15;
+      let g_wx = (x + (g_row & 1) * 24 + ((fbm_a - 128) >> 5)) & 255;
+      let g_bx = g_wx & 31;
+      let g_ed_y = if g_by < 15 - g_by { g_by } else { 15 - g_by };
+      let g_ed_x = if g_bx < 31 - g_bx { g_bx } else { 31 - g_bx };
+      let g_ed = if g_ed_y < g_ed_x { g_ed_y } else { g_ed_x };
+      let g_var = (hash2d_wrap(g_wx >> 5, g_row, 15, 33) & 31) - 15;
+      let g_moss = fbm_b > 154 && (y > 172 || g_ed < 4);
+      let h1 = if g_ed <= 1 { 10 } else { clamp_byte((if g_ed < 5 { 80 + g_ed * 26 } else { 186 }) + (crag >> 2)) };
+      let r1 = if g_ed <= 1 { 22 } else { if g_moss { 54 + (min_b >> 1) } else { 108 + g_var + (crag >> 3) } };
+      let g1 = if g_ed <= 1 { 20 } else { if g_moss { 82 + min_g } else { 90 + g_var + (crag >> 3) + min_g } };
+      let b1 = if g_ed <= 1 { 18 } else { if g_moss { 42 + (min_b >> 1) } else { 66 + g_var / 2 + (crag >> 4) + min_b } };
+      mem_store(tex256_addr(1, x, y), pack_rgba_h(r1, g1, b1, h1));
+
+      // ----------------------------------------------------------------------
+      // TEX 2: Weathered Mossy Timber Planks & Bolted Rafters (Screenshots 2 & 3!)
+      // ----------------------------------------------------------------------
+      let grain = fbm4_256((x * 3) & 255, (y >> 2) & 255, 131);
+      let ring = smooth_noise_256((x * 6) & 255, (y >> 1) & 255, 2, 199);
+      let plank_x = x & 63;
+      let plank_gap = plank_x <= 2 || plank_x >= 62;
+      let iron_band = y < 14 || y > 242;
+      let bolt = iron_band && ((plank_x == 16 || plank_x == 48) && (y >= 4 && y <= 10 || y >= 245 && y <= 251));
+      let wood_moss = fbm_b > 162 && !iron_band;
+      let wood_v = ((grain * 2 + ring) / 3) - 128;
+      let h2 = if plank_gap { 10 } else { if bolt { 252 } else { if iron_band { 210 } else { clamp_byte(155 + (wood_v >> 1)) } } };
+      let r2 = if plank_gap { 20 } else { if bolt { 156 } else { if iron_band { 64 } else { if wood_moss { 74 } else { 132 + (wood_v >> 2) } } } };
+      let g2 = if plank_gap { 17 } else { if bolt { 148 } else { if iron_band { 62 } else { if wood_moss { 98 } else { 96 + (wood_v >> 2) } } } };
+      let b2 = if plank_gap { 14 } else { if bolt { 140 } else { if iron_band { 68 } else { if wood_moss { 50 } else { 58 + (wood_v >> 3) } } } };
+      mem_store(tex256_addr(2, x, y), pack_rgba_h(r2, g2, b2, h2));
+
+      // ----------------------------------------------------------------------
+      // TEX 3: Fluted Limestone & Rusted-Collar Monumental Pillars (Screenshot 2!)
+      // ----------------------------------------------------------------------
+      let flute_phase = (x & 15) - 8;
+      let flute_h = 84 - (flute_phase * flute_phase * 5) / 4; // Crisp vertical concave/convex fluting!
+      let rust_band = (y >= 164 && y <= 255) || (y >= 60 && y <= 92);
+      let rust_streak = fbm4_256((x * 2) & 255, (y >> 1) & 255, 211);
+      let drum_seam = (y & 63) <= 2;
+      let h3 = if drum_seam { 18 } else { clamp_byte(132 + flute_h + (crag >> 3)) };
+      let r3 = if drum_seam { 42 } else { if rust_band && rust_streak > 100 { 164 + (crag >> 3) } else { 194 + (crag >> 3) } };
+      let g3 = if drum_seam { 38 } else { if rust_band && rust_streak > 100 { 102 + (crag >> 3) } else { 186 + (crag >> 3) } };
+      let b3 = if drum_seam { 36 } else { if rust_band && rust_streak > 100 { 62 } else { 174 + (crag >> 3) } };
+      mem_store(tex256_addr(3, x, y), pack_rgba_h(r3, g3, b3, h3));
+
+      // ----------------------------------------------------------------------
+      // TEX 4: Terracotta Worn Dungeon Flagstones (Screenshot 3 Floor!)
+      // ----------------------------------------------------------------------
+      let fl_wx = (x + ((fbm_a - 128) >> 5)) & 255;
+      let fl_wy = (y + ((fbm_b - 128) >> 5)) & 255;
+      let fl_row = (fl_wy >> 5) & 7;
+      let fl_tx = (fl_wx + (fl_row & 1) * 16) & 31;
+      let fl_ty = fl_wy & 31;
+      let fl_groove = fl_tx <= 1 || fl_ty <= 1;
+      let fl_var = (hash2d_wrap((fl_wx + (fl_row & 1) * 16) >> 5, fl_row, 7, 91) & 23) - 11;
+      let h4 = if fl_groove { 20 } else { clamp_byte(168 + (crag >> 2)) };
+      let r4 = if fl_groove { 32 } else { 124 + fl_var + (crag >> 3) };
+      let g4 = if fl_groove { 24 } else { 78 + (fl_var * 2) / 3 + (crag >> 3) };
+      let b4 = if fl_groove { 20 } else { 54 + fl_var / 2 + (crag >> 4) };
+      mem_store(tex256_addr(4, x, y), pack_rgba_h(r4, g4, b4, h4));
+
+      // ----------------------------------------------------------------------
+      // TEX 5: Boiling Radioactive Slime & Toxic Crust
+      // ----------------------------------------------------------------------
+      let sl_v = fbm4_256((x + (fbm_b >> 3)) & 255, (y + (fbm_a >> 3)) & 255, 251);
+      let crust = sl_v < 96;
+      let h5 = sl_v;
+      let r5 = if crust { 38 } else { 64 + ((sl_v - 96) * 3) / 4 };
+      let g5 = if crust { 68 } else { 155 + ((sl_v - 96) * 5) / 8 };
+      let b5 = if crust { 28 } else { 36 + (sl_v >> 3) };
+      mem_store(tex256_addr(5, x, y), pack_rgba_h(r5, g5, b5, h5));
+
+      // ----------------------------------------------------------------------
+      // TEX 6: Monster Atlas (Top half y<128: Pale Blood-Spattered Shambler Fur;
+      //        Bottom half y>=128: Crimson Knight Enamel & Riveted Battle Steel)
+      // ----------------------------------------------------------------------
+      if y < 128 {
+        let fur = fbm4_256((x * 2) & 255, (y * 4) & 255, 307);
+        let blood = fbm_b > 176 && y > 48;
+        let mr = if blood { 156 } else { 206 + ((fur - 128) >> 2) };
+        let mg = if blood { 26 } else { 194 + ((fur - 128) >> 2) };
+        let mb = if blood { 24 } else { 174 + ((fur - 128) >> 2) };
+        mem_store(tex256_addr(6, x, y), pack_rgba_h(mr, mg, mb, 140 + (fur >> 2)));
+      } else {
+        let plate_seam = (x & 31) == 0 || (y & 31) == 0;
+        let is_gold_trim = (y & 31) < 4;
+        let ar = if plate_seam { 32 } else { if is_gold_trim { 208 } else { 168 + (crag >> 3) } };
+        let ag = if plate_seam { 24 } else { if is_gold_trim { 164 } else { 34 + (crag >> 4) } };
+        let ab = if plate_seam { 26 } else { if is_gold_trim { 56 } else { 36 + (crag >> 4) } };
+        mem_store(tex256_addr(6, x, y), pack_rgba_h(ar, ag, ab, if plate_seam { 40 } else { 210 }));
+      };
+
+      // ----------------------------------------------------------------------
+      // TEX 7: Pure Brushed Blued Gunmetal (`x < 128`) & Gleaming Brass (`x >= 128`)
+      //        (`y >= 128` on gunmetal half has machined cooling slots; Elder Portal
+      //        vortex is synthesized procedurally in GLSL!)
+      // ----------------------------------------------------------------------
+      let brushed = smooth_noise_256(x & 255, (y * 8) & 255, 2, 401);
+      let brass = x >= 128;
+      let vent = !brass && y >= 128 && ((x & 15) >= 5 && (x & 15) <= 10) && ((y & 31) >= 8 && (y & 31) <= 23);
+      let rib = brass && ((y & 15) < 3);
+      let gr = if vent { 14 } else { if brass { (if rib { 184 } else { 232 }) + ((brushed - 128) >> 3) } else { 76 + ((brushed - 128) >> 3) } };
+      let gg = if vent { 15 } else { if brass { (if rib { 138 } else { 180 }) + ((brushed - 128) >> 3) } else { 84 + ((brushed - 128) >> 3) } };
+      let gb = if vent { 18 } else { if brass { if rib { 48 } else { 68 } } else { 98 + ((brushed - 128) >> 3) } };
+      let gh = if vent { 8 } else { if rib { 150 } else { 210 + (brushed >> 3) } };
+      mem_store(tex256_addr(7, x, y), pack_rgba_h(gr, gg, gb, gh));
+
+      x = x + 1;
     }
-    ty = ty + 1;
-  }
-}
-
-fn set_wall_box(x0: i64, y0: i64, x1: i64, y1: i64, wtype: i64) -[Mem]-> unit {
-  let mut y = y0;
-  while y <= y1 max 24 {
-    if y >= 0 && y < 24 {
-      let mut x = x0;
-      while x <= x1 max 24 {
-        if x >= 0 && x < 24 {
-          mem_store(128 + map_idx(x, y), wtype);
-        } else { () };
-        x = x + 1;
-      }
-    } else { () };
     y = y + 1;
   }
 }
 
-fn set_floor_box(x0: i64, y0: i64, x1: i64, y1: i64, ftype: i64) -[Mem]-> unit {
-  let mut y = y0;
-  while y <= y1 max 24 {
-    if y >= 0 && y < 24 {
-      let mut x = x0;
-      while x <= x1 max 24 {
-        if x >= 0 && x < 24 {
-          mem_store(704 + map_idx(x, y), ftype);
-        } else { () };
-        x = x + 1;
-      }
-    } else { () };
-    y = y + 1;
+// --- 3D Polygonal Mesh Builder (`buf_kind`: 0=Static World, 1=Dynamic Entities, 2=3D Gun Viewmodel) ---
+
+fn push_vertex(
+  buf_kind: i64,
+  x: i64,
+  y: i64,
+  z: i64,
+  norm_packed: i64,
+  u: i64,
+  v: i64,
+  tex_flags: i64,
+  col_ao: i64
+) -[Mem]-> unit {
+  if buf_kind == 0 {
+    let idx = mem_load(20);
+    if idx < 98000 {
+      let base = 600000 + idx * 8;
+      mem_store(base, x);
+      mem_store(base + 1, y);
+      mem_store(base + 2, z);
+      mem_store(base + 3, norm_packed);
+      mem_store(base + 4, u);
+      mem_store(base + 5, v);
+      mem_store(base + 6, tex_flags);
+      mem_store(base + 7, col_ao);
+      mem_store(20, idx + 1);
+    } else { () }
+  } else {
+    if buf_kind == 1 {
+      let idx = mem_load(21);
+      if idx < 55000 {
+        let base = 1400000 + idx * 8;
+        mem_store(base, x);
+        mem_store(base + 1, y);
+        mem_store(base + 2, z);
+        mem_store(base + 3, norm_packed);
+        mem_store(base + 4, u);
+        mem_store(base + 5, v);
+        mem_store(base + 6, tex_flags);
+        mem_store(base + 7, col_ao);
+        mem_store(21, idx + 1);
+      } else { () }
+    } else {
+      let idx = mem_load(22);
+      if idx < 22000 {
+        let base = 1850000 + idx * 8;
+        mem_store(base, x);
+        mem_store(base + 1, y);
+        mem_store(base + 2, z);
+        mem_store(base + 3, norm_packed);
+        mem_store(base + 4, u);
+        mem_store(base + 5, v);
+        mem_store(base + 6, tex_flags);
+        mem_store(base + 7, col_ao);
+        mem_store(22, idx + 1);
+      } else { () }
+    }
   }
 }
 
-fn spawn_enemy(eid: i64, tx: i64, ty: i64, kind: i64, hp: i64) -[Mem]-> unit {
-  if eid >= 0 && eid < 8 {
-    let base = enemy_addr(eid);
-    mem_store(base, tx * 1024 + 512);
-    mem_store(base + 1, ty * 1024 + 512);
-    mem_store(base + 2, kind);
-    mem_store(base + 3, hp);
-    mem_store(base + 4, 0);
-    mem_store(base + 5, 25 + eid * 7);
-    mem_store(base + 6, 0);
-    mem_store(base + 7, eid * 5);
+fn pack_tint_ao(r: i64, g: i64, b: i64, ao: i64) -> i64 {
+  clamp_byte(r) | (clamp_byte(g) << 8) | (clamp_byte(b) << 16) | (clamp_byte(ao) << 24)
+}
+
+// Emits an arbitrary 3D quad `(p0, p1, p2, p3)` with automatic cross-product 3D face normal!
+fn emit_quad_3d(
+  buf_kind: i64,
+  x0: i64, y0: i64, z0: i64, u0: i64, v0: i64, ao0: i64,
+  x1: i64, y1: i64, z1: i64, u1: i64, v1: i64, ao1: i64,
+  x2: i64, y2: i64, z2: i64, u2: i64, v2: i64, ao2: i64,
+  x3: i64, y3: i64, z3: i64, u3: i64, v3: i64, ao3: i64,
+  tex_flags: i64,
+  tr: i64, tg: i64, tb: i64
+) -[Mem]-> unit {
+  let ux = (x1 - x0) >> 3;
+  let uy = (y1 - y0) >> 3;
+  let uz = (z1 - z0) >> 3;
+  let vx = (x3 - x0) >> 3;
+  let vy = (y3 - y0) >> 3;
+  let vz = (z3 - z0) >> 3;
+
+  let cx = (uy * vz - uz * vy) >> 6;
+  let cy = (uz * vx - ux * vz) >> 6;
+  let cz = (ux * vy - uy * vx) >> 6;
+  let len_sq = cx * cx + cy * cy + cz * cz;
+  let len = isqrt_24bit(len_sq);
+  let safe_len = if len <= 0 { 1 } else { len };
+  let nx = (cx * 127) / safe_len;
+  let ny = (cy * 127) / safe_len;
+  let nz = (cz * 127) / safe_len;
+  let n_pack = pack_norm(nx, ny, nz);
+
+  let c0 = pack_tint_ao(tr, tg, tb, ao0);
+  let c1 = pack_tint_ao(tr, tg, tb, ao1);
+  let c2 = pack_tint_ao(tr, tg, tb, ao2);
+  let c3 = pack_tint_ao(tr, tg, tb, ao3);
+
+  // Tri 1: 0 -> 1 -> 2
+  push_vertex(buf_kind, x0, y0, z0, n_pack, u0, v0, tex_flags, c0);
+  push_vertex(buf_kind, x1, y1, z1, n_pack, u1, v1, tex_flags, c1);
+  push_vertex(buf_kind, x2, y2, z2, n_pack, u2, v2, tex_flags, c2);
+  // Tri 2: 0 -> 2 -> 3
+  push_vertex(buf_kind, x0, y0, z0, n_pack, u0, v0, tex_flags, c0);
+  push_vertex(buf_kind, x2, y2, z2, n_pack, u2, v2, tex_flags, c2);
+  push_vertex(buf_kind, x3, y3, z3, n_pack, u3, v3, tex_flags, c3);
+}
+
+// Emits a full 6-sided 3D architectural brush / beam / step box (`x0..x1`, `y0..y1`, `z0..z1`)
+fn emit_box_brush(
+  buf_kind: i64,
+  x0: i64, y0: i64, z0: i64,
+  x1: i64, y1: i64, z1: i64,
+  tex_id: i64,
+  uv_scale: i64,
+  tr: i64, tg: i64, tb: i64,
+  ao_bot: i64, ao_top: i64
+) -[Mem]-> unit {
+  let sc = if uv_scale <= 0 { 2000 } else { uv_scale };
+  let u_dx = ((x1 - x0) * 1024) / sc;
+  let u_dz = ((z1 - z0) * 1024) / sc;
+  let v_dy = ((y1 - y0) * 1024) / sc;
+
+  // Front (+Z)
+  emit_quad_3d(buf_kind,
+    x0, y0, z1, 0, v_dy, ao_bot,
+    x1, y0, z1, u_dx, v_dy, ao_bot,
+    x1, y1, z1, u_dx, 0, ao_top,
+    x0, y1, z1, 0, 0, ao_top,
+    tex_id, tr, tg, tb);
+  // Back (-Z)
+  emit_quad_3d(buf_kind,
+    x1, y0, z0, 0, v_dy, ao_bot,
+    x0, y0, z0, u_dx, v_dy, ao_bot,
+    x0, y1, z0, u_dx, 0, ao_top,
+    x1, y1, z0, 0, 0, ao_top,
+    tex_id, tr, tg, tb);
+  // Left (-X)
+  emit_quad_3d(buf_kind,
+    x0, y0, z0, 0, v_dy, ao_bot,
+    x0, y0, z1, u_dz, v_dy, ao_bot,
+    x0, y1, z1, u_dz, 0, ao_top,
+    x0, y1, z0, 0, 0, ao_top,
+    tex_id, tr, tg, tb);
+  // Right (+X)
+  emit_quad_3d(buf_kind,
+    x1, y0, z1, 0, v_dy, ao_bot,
+    x1, y0, z0, u_dz, v_dy, ao_bot,
+    x1, y1, z0, u_dz, 0, ao_top,
+    x1, y1, z1, 0, 0, ao_top,
+    tex_id, tr, tg, tb);
+  // Top (+Y)
+  emit_quad_3d(buf_kind,
+    x0, y1, z1, 0, u_dz, ao_top,
+    x1, y1, z1, u_dx, u_dz, ao_top,
+    x1, y1, z0, u_dx, 0, ao_top,
+    x0, y1, z0, 0, 0, ao_top,
+    tex_id, tr, tg, tb);
+  // Bottom (-Y)
+  emit_quad_3d(buf_kind,
+    x0, y0, z0, 0, u_dz, ao_bot,
+    x1, y0, z0, u_dx, u_dz, ao_bot,
+    x1, y0, z1, u_dx, 0, ao_bot,
+    x0, y0, z1, 0, 0, ao_bot,
+    tex_id, tr, tg, tb);
+}
+
+// Emits a tilted 3D wooden ceiling rafter / diagonal strut from `(ax, ay, az)` to `(bx, by, bz)`!
+fn emit_tilted_beam(
+  ax: i64, ay: i64, az: i64,
+  bx: i64, by: i64, bz: i64,
+  half_w: i64, half_h: i64,
+  tex_id: i64
+) -[Mem]-> unit {
+  // Bottom, Top, and two Side quads along the 3D beam axis!
+  emit_quad_3d(0,
+    ax, ay - half_h, az - half_w, 0, 1024, 150,
+    bx, by - half_h, bz - half_w, 3072, 1024, 150,
+    bx, by - half_h, bz + half_w, 3072, 0, 150,
+    ax, ay - half_h, az + half_w, 0, 0, 150,
+    tex_id, 220, 200, 180);
+  emit_quad_3d(0,
+    ax, ay + half_h, az + half_w, 0, 1024, 210,
+    bx, by + half_h, bz + half_w, 3072, 1024, 210,
+    bx, by + half_h, bz - half_w, 3072, 0, 210,
+    ax, ay + half_h, az - half_w, 0, 0, 210,
+    tex_id, 240, 225, 205);
+  // Front (+Z) & Back (-Z) beam faces
+  emit_quad_3d(0,
+    ax, ay - half_h, az + half_w, 0, 1024, 175,
+    bx, by - half_h, bz + half_w, 3072, 1024, 175,
+    bx, by + half_h, bz + half_w, 3072, 0, 215,
+    ax, ay + half_h, az + half_w, 0, 0, 215,
+    tex_id, 235, 215, 195);
+  emit_quad_3d(0,
+    bx, by - half_h, bz - half_w, 0, 1024, 175,
+    ax, ay - half_h, az - half_w, 3072, 1024, 175,
+    ax, ay + half_h, az - half_w, 3072, 0, 215,
+    bx, by + half_h, bz - half_w, 0, 0, 215,
+    tex_id, 235, 215, 195);
+}
+
+// Emits a smooth-shaded 3D quad with per-vertex custom normals (`tex_flags | 32`)!
+fn emit_smooth_quad_3d(
+  buf_kind: i64,
+  x0: i64, y0: i64, z0: i64, n0: i64, u0: i64, v0: i64, ao0: i64,
+  x1: i64, y1: i64, z1: i64, n1: i64, u1: i64, v1: i64, ao1: i64,
+  x2: i64, y2: i64, z2: i64, n2: i64, u2: i64, v2: i64, ao2: i64,
+  x3: i64, y3: i64, z3: i64, n3: i64, u3: i64, v3: i64, ao3: i64,
+  tex_flags: i64,
+  tr: i64, tg: i64, tb: i64
+) -[Mem]-> unit {
+  let c0 = pack_tint_ao(tr, tg, tb, ao0);
+  let c1 = pack_tint_ao(tr, tg, tb, ao1);
+  let c2 = pack_tint_ao(tr, tg, tb, ao2);
+  let c3 = pack_tint_ao(tr, tg, tb, ao3);
+  let tf = tex_flags | 32;
+
+  push_vertex(buf_kind, x0, y0, z0, n0, u0, v0, tf, c0);
+  push_vertex(buf_kind, x1, y1, z1, n1, u1, v1, tf, c1);
+  push_vertex(buf_kind, x2, y2, z2, n2, u2, v2, tf, c2);
+
+  push_vertex(buf_kind, x0, y0, z0, n0, u0, v0, tf, c0);
+  push_vertex(buf_kind, x2, y2, z2, n2, u2, v2, tf, c2);
+  push_vertex(buf_kind, x3, y3, z3, n3, u3, v3, tf, c3);
+}
+
+// Emits a Monumental 12-Sided Smooth-Shaded Fluted Stone & Rusted-Base Pillar (Screenshot 2 Right Column!)
+fn emit_monumental_pillar(cx: i64, y0: i64, y1: i64, cz: i64, rad: i64) -[Mem]-> unit {
+  let base_h = y0 + 1450;
+  let base_rad = (rad * 5) / 4;
+  let mut seg = 0;
+  while seg < 12 max 12 {
+    let a0 = (seg * 4096) / 12;
+    let a1 = ((seg + 1) * 4096) / 12;
+    let c0 = fast_cos(a0);
+    let s0 = fast_sin(a0);
+    let c1 = fast_cos(a1);
+    let s1 = fast_sin(a1);
+
+    let n0 = pack_norm((c0 * 124) >> 10, 12, (s0 * 124) >> 10);
+    let n1 = pack_norm((c1 * 124) >> 10, 12, (s1 * 124) >> 10);
+    let ns0 = pack_norm((c0 * 127) >> 10, 0, (s0 * 127) >> 10);
+    let ns1 = pack_norm((c1 * 127) >> 10, 0, (s1 * 127) >> 10);
+
+    // Flared rusted frustum base (`y0 .. base_h`)
+    let bx0 = cx + ((base_rad * c0) >> 10);
+    let bz0 = cz + ((base_rad * s0) >> 10);
+    let bx1 = cx + ((base_rad * c1) >> 10);
+    let bz1 = cz + ((base_rad * s1) >> 10);
+
+    let sx0 = cx + ((rad * c0) >> 10);
+    let sz0 = cz + ((rad * s0) >> 10);
+    let sx1 = cx + ((rad * c1) >> 10);
+    let sz1 = cz + ((rad * s1) >> 10);
+
+    let u0 = (seg * 2048) / 12;
+    let u1 = ((seg + 1) * 2048) / 12;
+
+    emit_smooth_quad_3d(0,
+      bx0, y0, bz0, n0, u0, 1024, 145,
+      bx1, y0, bz1, n1, u1, 1024, 145,
+      sx1, base_h, sz1, ns1, u1, 660, 228,
+      sx0, base_h, sz0, ns0, u0, 660, 228,
+      3, 245, 232, 215);
+
+    // Tall fluted upper limestone column shaft (`base_h .. y1`)
+    emit_smooth_quad_3d(0,
+      sx0, base_h, sz0, ns0, u0, 2048, 228,
+      sx1, base_h, sz1, ns1, u1, 2048, 228,
+      sx1, y1, sz1, ns1, u1, 0, 205,
+      sx0, y1, sz0, ns0, u0, 0, 205,
+      3, 252, 246, 238);
+
+    seg = seg + 1;
+  }
+  add_wall_collider(cx - rad, cz - rad, cx + rad, cz + rad, y0, y1);
+}
+
+// --- Physics Collider Registration (`walkable_sectors` & `wall_colliders`) ---
+
+fn add_walk_sector(x0: i64, z0: i64, x1: i64, z1: i64, floor_y: i64, ceil_y: i64, hazard: i64) -[Mem]-> unit {
+  let idx = mem_load(28);
+  if idx < 48 {
+    let base = 5000 + idx * 8;
+    mem_store(base, x0);
+    mem_store(base + 1, z0);
+    mem_store(base + 2, x1);
+    mem_store(base + 3, z1);
+    mem_store(base + 4, floor_y);
+    mem_store(base + 5, ceil_y);
+    mem_store(base + 6, hazard);
+    mem_store(28, idx + 1);
   } else { () }
 }
 
-fn spawn_item(iid: i64, tx: i64, ty: i64, kind: i64) -[Mem]-> unit {
-  if iid >= 0 && iid < 8 {
-    let base = item_addr(iid);
-    mem_store(base, tx * 1024 + 512);
-    mem_store(base + 1, ty * 1024 + 512);
-    mem_store(base + 2, kind);
-    mem_store(base + 3, 1);
+fn add_wall_collider(x0: i64, z0: i64, x1: i64, z1: i64, y0: i64, y1: i64) -[Mem]-> unit {
+  let idx = mem_load(29);
+  if idx < 68 {
+    let base = 5400 + idx * 8;
+    mem_store(base, x0);
+    mem_store(base + 1, z0);
+    mem_store(base + 2, x1);
+    mem_store(base + 3, z1);
+    mem_store(base + 4, y0);
+    mem_store(base + 5, y1);
+    mem_store(29, idx + 1);
   } else { () }
 }
 
-// Build the complete E1M1-inspired "Slipgate Complex" architectural level (`24x24`)!
-fn build_slipgate_level() -[Mem]-> unit {
-  // Fill solid gothic stone & clear floor sectors
-  set_wall_box(0, 0, 23, 23, 2);
-  set_floor_box(0, 0, 23, 23, 0);
-
-  // Room 1: Tech-Base Entry Bunker (`x: 2..6, y: 2..6`)
-  set_wall_box(1, 1, 7, 7, 1);
-  set_wall_box(2, 2, 6, 6, 0);
-  mem_store(128 + map_idx(1, 4), 4); // Torch!
-  mem_store(128 + map_idx(4, 1), 3); // Copper bulkhead trim
-
-  // East Tech Corridor (`x: 7..10, y: 3..5`)
-  set_wall_box(7, 3, 10, 5, 0);
-  mem_store(128 + map_idx(8, 2), 4);
-  mem_store(128 + map_idx(8, 6), 4);
-
-  // Room 2: Radioactive Slime Bridge Hall (`x: 11..17, y: 2..8`)
-  set_wall_box(11, 2, 17, 8, 0);
-  // Glowing green acid canals north & south of central iron bridge (`y == 4..5`)!
-  set_floor_box(12, 2, 16, 3, 1);
-  set_floor_box(12, 6, 16, 8, 1);
-  mem_store(128 + map_idx(14, 1), 4);
-  mem_store(128 + map_idx(18, 4), 4);
-
-  // South Connector Passage (`x: 13..15, y: 9..11`)
-  set_wall_box(13, 9, 15, 11, 0);
-  mem_store(128 + map_idx(12, 10), 3);
-  mem_store(128 + map_idx(16, 10), 3);
-
-  // Room 3: Open-Sky Gothic Pillared Courtyard (`x: 8..19, y: 12..18`)
-  set_wall_box(8, 12, 19, 18, 0);
-  set_floor_box(8, 12, 19, 18, 2); // Open tempest storm sky!
-  // 4 Heavy Copper/Stone Tactical Cover Pillars + Torch Braziers
-  mem_store(128 + map_idx(11, 14), 3);
-  mem_store(128 + map_idx(16, 14), 3);
-  mem_store(128 + map_idx(11, 16), 3);
-  mem_store(128 + map_idx(16, 16), 3);
-  mem_store(128 + map_idx(7, 15), 4);
-  mem_store(128 + map_idx(20, 15), 4);
-
-  // West Fortress Stairway Hall (`x: 3..7, y: 14..16`) -> Sanctum (`x: 2..6, y: 17..21`)
-  set_wall_box(3, 14, 7, 16, 0);
-  set_wall_box(2, 17, 6, 21, 0);
-  mem_store(128 + map_idx(1, 19), 4);
-  mem_store(128 + map_idx(7, 19), 4);
-  // Final Glowing Violet-Gold Runic Exit Slipgate at `(4, 22)` + trigger pad at `(4, 21)`!
-  mem_store(128 + map_idx(4, 22), 5);
-  mem_store(128 + map_idx(3, 22), 3);
-  mem_store(128 + map_idx(5, 22), 3);
-
-  // Populate 8 Monsters (Kind 1 = Cyber-Grunt, Kind 2 = Horned Fiend Knight, Kind 3 = Dread Warden Boss)
-  spawn_enemy(0, 9, 4, 1, 35);
-  spawn_enemy(1, 15, 4, 1, 35);
-  spawn_enemy(2, 14, 7, 2, 65);
-  spawn_enemy(3, 10, 13, 1, 40);
-  spawn_enemy(4, 17, 13, 2, 70);
-  spawn_enemy(5, 13, 17, 1, 40);
-  spawn_enemy(6, 5, 15, 2, 75);
-  spawn_enemy(7, 4, 19, 3, 130); // Dread Slipgate Warden guarding the Exit Arch!
-
-  // Populate 8 Pickups (1 = Medkit +30 HP, 2 = Buckshot Shells +8, 3 = Bronze Armor +50)
-  spawn_item(0, 5, 2, 2);
-  spawn_item(1, 14, 4, 3);
-  spawn_item(2, 17, 5, 1);
-  spawn_item(3, 9, 17, 2);
-  spawn_item(4, 18, 17, 1);
-  spawn_item(5, 14, 15, 2);
-  spawn_item(6, 3, 15, 1);
-  spawn_item(7, 6, 20, 2);
+fn emit_solid_wall(
+  x0: i64, y0: i64, z0: i64,
+  x1: i64, y1: i64, z1: i64,
+  tex_id: i64, uv_sc: i64,
+  ao_bot: i64, ao_top: i64
+) -[Mem]-> unit {
+  emit_box_brush(0, x0, y0, z0, x1, y1, z1, tex_id, uv_sc, 255, 255, 255, ao_bot, ao_top);
+  add_wall_collider(x0, z0, x1, z1, y0, y1);
 }
 
-fn save_combat_snapshot() -[Mem]-> unit {
-  let head = mem_load(16);
+fn emit_wall_torch(x: i64, y: i64, z: i64) -[Mem]-> unit {
+  // Iron bracket + burning brazier cup
+  emit_box_brush(0, x - 90, y - 260, z - 90, x + 90, y, z + 90, 2, 800, 120, 105, 95, 160, 200);
+  // Register static flickering point light
+  let lc = mem_load(23);
+  if lc < 20 {
+    let lb = 8000 + lc * 8;
+    mem_store(lb, x);
+    mem_store(lb + 1, y + 180);
+    mem_store(lb + 2, z);
+    mem_store(lb + 3, 7800);
+    mem_store(lb + 4, 255);
+    mem_store(lb + 5, 168);
+    mem_store(lb + 6, 68);
+    mem_store(lb + 7, 1); // Flicker enabled!
+    mem_store(23, lc + 1);
+  } else { () }
+}
+
+// ============================================================================
+// BUILD COMPLETE MULTI-LEVEL 3D ARCHITECTURE ("CANYON & CITADEL OF THE SLIPGATE")
+// ============================================================================
+
+fn build_citadel_3d_world() -[Mem]-> unit {
+  mem_store(20, 0);
+  mem_store(23, 0);
+  mem_store(28, 0);
+  mem_store(29, 0);
+
+  // --------------------------------------------------------------------------
+  // ZONE 1: SUNKEN CANYON & OVERHEAD SLATTED WOODEN BRIDGE (Screenshot 2!)
+  // Bounds: X in [-5200 .. +5200], Z in [-18000 .. +4000], Floor Y = 0
+  // --------------------------------------------------------------------------
+  // Canyon Flagstone & Mossy Rock Floor
+  emit_quad_3d(0,
+    -5200, 0, 4000, 0, 7000, 195,
+    5200, 0, 4000, 3500, 7000, 195,
+    5200, 0, -18000, 3500, 0, 220,
+    -5200, 0, -18000, 0, 0, 220,
+    4, 240, 235, 220);
+  add_walk_sector(-5000, -18000, 5000, 3800, 0, 9000, 0);
+
+  // Left Mossy Stone Ledge Bench (like lower-left ledge in Screenshot 2!)
+  emit_solid_wall(-5200, 0, -9000, -3500, 750, 2500, 0, 2400, 155, 240);
+
+  // Towering Sunlit Wild-Stone Canyon Walls (`Tex 0`) — Open to the Crimson Storm Sky above!
+  emit_solid_wall(-5800, 0, -18000, -5100, 7200, 4200, 0, 2800, 150, 255);
+  emit_solid_wall(5100, 0, -18000, 5800, 7200, 4200, 0, 2800, 145, 245);
+  // Back South Cliff behind player start (`Z = +3900 .. +4500`)
+  emit_solid_wall(-5800, 0, 3900, 5800, 7200, 4500, 0, 2800, 145, 250);
+
+  // 3 Monumental Fluted Stone & Rusted-Band Pillars on the Right (`X = +3600`, Screenshot 2!)
+  emit_monumental_pillar(3600, 0, 7200, -1500, 780);
+  emit_monumental_pillar(3600, 0, 7200, -6200, 780);
+  emit_monumental_pillar(3600, 0, 7200, -11000, 780);
+
+  // Warm Sunlight / Sky Glow Light Pool illuminating the Left Canyon Masonry!
+  let s_lb = 8000 + mem_load(23) * 8;
+  mem_store(s_lb, -2200);
+  mem_store(s_lb + 1, 4600);
+  mem_store(s_lb + 2, -4500);
+  mem_store(s_lb + 3, 14000);
+  mem_store(s_lb + 4, 255);
+  mem_store(s_lb + 5, 218);
+  mem_store(s_lb + 6, 162);
+  mem_store(s_lb + 7, 0);
+  mem_store(23, mem_load(23) + 1);
+
+  // OVERHEAD SLATTED WOODEN PLANK BRIDGE (`Y = +3260`, spanning `X = -5100 .. +3100, Z = -5800 .. -1800`)!
+  // Two heavy timber support stringer beams + 14 individual weathered mossy planks with crimson sky shining between them!
+  emit_box_brush(0, -5100, 3080, -5650, 3100, 3260, -5430, 2, 2000, 195, 180, 160, 140, 215);
+  emit_box_brush(0, -5100, 3080, -2170, 3100, 3260, -1950, 2, 2000, 195, 180, 160, 140, 215);
+  let mut pl = 0;
+  while pl < 14 max 14 {
+    let px0 = -5050 + pl * 580;
+    let px1 = px0 + 390; // 190mm open crimson-sky gap between every mossy wooden plank!
+    emit_box_brush(0, px0, 3260, -5800, px1, 3380, -1800, 2, 1600, 238, 232, 210, 160, 248);
+    pl = pl + 1;
+  }
+  // Walkable bridge deck at `Y = 3380`
+  add_walk_sector(-5000, -5800, 3000, -1800, 3380, 9000, 0);
+
+  // 6-Step Wide Stone Staircase at North end of Canyon (`Z = -13500 .. -18000`, `Y = 0 -> +1800`)!
+  let mut st = 0;
+  while st < 6 max 6 {
+    let sz0 = -13500 - (st + 1) * 750;
+    let sz1 = -13500 - st * 750;
+    let sy_top = (st + 1) * 300;
+    emit_box_brush(0, -2800, 0, sz0, 2800, sy_top, sz1, 4, 2000, 230, 220, 210, 150, 235);
+    add_walk_sector(-2800, sz0, 2800, sz1, sy_top, 9000, 0);
+    st = st + 1;
+  }
+  // Flanking canyon terraces beside staircase (`Y = 1800`)
+  emit_solid_wall(-5200, 0, -18000, -2800, 2200, -13500, 0, 2400, 150, 240);
+  emit_solid_wall(2800, 0, -18000, 5200, 2200, -13500, 0, 2400, 150, 240);
+
+  // --------------------------------------------------------------------------
+  // ZONE 2: GOTHIC VAULTED HALL WITH DIAGONAL TIMBER RAFTERS (Screenshot 3!)
+  // Bounds: X in [-8400 .. +8400], Z in [-36000 .. -18000], Floor Y = +1800
+  // --------------------------------------------------------------------------
+  // Entrance Partition Walls at `Z = -18000` with grand central archway (`X = -2800 .. +2800`)
+  emit_solid_wall(-8800, 0, -18400, -2800, 8200, -17600, 1, 2600, 135, 225);
+  emit_solid_wall(2800, 0, -18400, 8800, 8200, -17600, 1, 2600, 135, 225);
+  // Arch lintel above doorway (`Y = 5200 .. 8200`)
+  emit_box_brush(0, -2800, 5200, -18400, 2800, 8200, -17600, 1, 2400, 210, 200, 195, 140, 210);
+
+  // Terracotta Worn Flagstone Hall Floor (`Y = 1800`, `Tex 4`) + Glowing Slime Canal along East Side!
+  emit_quad_3d(0,
+    -8400, 1800, -18000, 0, 8000, 175,
+    4600, 1800, -18000, 5800, 8000, 175,
+    4600, 1800, -36000, 5800, 0, 175,
+    -8400, 1800, -36000, 0, 0, 175,
+    4, 245, 225, 210);
+  add_walk_sector(-8200, -36000, 4600, -18000, 1800, 9200, 0);
+
+  // Sunken Glowing Acid-Slime Trench on East flank (`X = 4600 .. 8400, Y = 1350`, `Tex 5` + flag 16 emissive!)
+  emit_quad_3d(0,
+    4600, 1350, -18000, 0, 6000, 255,
+    8400, 1350, -18000, 2000, 6000, 255,
+    8400, 1350, -36000, 2000, 0, 255,
+    4600, 1350, -36000, 0, 0, 255,
+    5 + 16, 255, 255, 255);
+  add_walk_sector(4600, -36000, 8200, -18000, 1350, 9200, 1); // Hazard 1 = Acid Slime!
+  // Iron Catwalk Bridge spanning the Acid Trench (`Z = -28500 .. -25500`)
+  emit_box_brush(0, 4400, 1720, -28500, 8400, 1840, -25500, 2, 1800, 210, 205, 200, 150, 230);
+  add_walk_sector(4400, -28500, 8200, -25500, 1840, 9200, 0);
+
+  // Outer Castle Stone Walls of Gothic Hall (`Tex 1`)
+  emit_solid_wall(-9000, 1800, -36500, -8300, 8400, -18000, 1, 2600, 130, 215);
+  emit_solid_wall(8300, 1300, -36500, 9000, 8400, -18000, 1, 2600, 130, 215);
+
+  // Left-Side Raised Wooden Gallery Balcony + Bolted Timber Support Posts (exact Screenshot 3 left gallery!)
+  emit_box_brush(0, -8300, 4400, -35500, -5200, 4650, -18400, 2, 2000, 220, 195, 170, 120, 215);
+  // Wooden parapet wall on gallery (`Y = 4650 .. 6000`, `Tex 2`)
+  emit_box_brush(0, -5450, 4650, -35500, -5200, 5950, -18400, 2, 1600, 215, 190, 165, 155, 225);
+  // 4 Bolted Timber Support Columns under the left gallery
+  emit_solid_wall(-5550, 1800, -21500, -5150, 4400, -21100, 2, 1200, 140, 210);
+  emit_solid_wall(-5550, 1800, -26000, -5150, 4400, -25600, 2, 1200, 140, 210);
+  emit_solid_wall(-5550, 1800, -30500, -5150, 4400, -30100, 2, 1200, 140, 210);
+  emit_solid_wall(-5550, 1800, -34500, -5150, 4400, -34100, 2, 1200, 140, 210);
+
+  // MASSIVE DIAGONAL WOODEN ROOF RAFTERS & CENTRAL RIDGE BEAM (exact Screenshot 3 ceiling!)
+  // Central longitudinal ridge beam at `Y = 8600`
+  emit_box_brush(0, -450, 8350, -36500, 450, 8950, -18000, 2, 2400, 205, 185, 165, 155, 210);
+  let mut rf = 0;
+  while rf < 4 max 4 {
+    let rz = -20500 - rf * 4600;
+    // Left & Right 35-degree tilted wooden rafters meeting at the ridge `(0, 8650, rz)`!
+    emit_tilted_beam(-8300, 5800, rz, 0, 8650, rz, 280, 260, 2);
+    emit_tilted_beam(8300, 5800, rz, 0, 8650, rz, 280, 260, 2);
+    rf = rf + 1;
+  }
+
+  // Flickering Wall Torches + Glowing Green Slime Light in Gothic Hall!
+  emit_wall_torch(-4950, 3400, -21300);
+  emit_wall_torch(-4950, 3400, -30300);
+  emit_wall_torch(8100, 3600, -23000);
+  emit_wall_torch(8100, 3600, -32000);
+
+  let sl_lb = 8000 + mem_load(23) * 8;
+  mem_store(sl_lb, 6400);
+  mem_store(sl_lb + 1, 2100);
+  mem_store(sl_lb + 2, -27000);
+  mem_store(sl_lb + 3, 9000);
+  mem_store(sl_lb + 4, 90);
+  mem_store(sl_lb + 5, 245);
+  mem_store(sl_lb + 6, 75);
+  mem_store(sl_lb + 7, 1);
+  mem_store(23, mem_load(23) + 1);
+
+  // --------------------------------------------------------------------------
+  // ZONE 3: SANCTUM OF THE ELDER SLIPGATE (`Z = -49000 .. -36000`, Floor `Y = +2700`)
+  // --------------------------------------------------------------------------
+  // North Gothic Wall with Archway + 3-Step Altar Stairs (`Y = 1800 -> 2700`)
+  emit_solid_wall(-9000, 1800, -36600, -2400, 8400, -35800, 1, 2600, 130, 215);
+  emit_solid_wall(2400, 1800, -36600, 9000, 8400, -35800, 1, 2600, 130, 215);
+  emit_box_brush(0, -2400, 5400, -36600, 2400, 8400, -35800, 1, 2400, 210, 200, 195, 140, 210);
+
+  let mut ast = 0;
+  while ast < 3 max 3 {
+    let az0 = -36000 - (ast + 1) * 700;
+    let az1 = -36000 - ast * 700;
+    let ay_t = 1800 + (ast + 1) * 300;
+    emit_box_brush(0, -2400, 1800, az0, 2400, ay_t, az1, 4, 1800, 235, 225, 215, 150, 235);
+    add_walk_sector(-2400, az0, 2400, az1, ay_t, 9200, 0);
+    ast = ast + 1;
+  }
+
+  // Sanctum Arena (`X in -6200..+6200, Z in -49000..-38100, Y = 2700`)
+  emit_quad_3d(0,
+    -6200, 2700, -38100, 0, 5000, 180,
+    6200, 2700, -38100, 5000, 5000, 180,
+    6200, 2700, -49000, 5000, 0, 180,
+    -6200, 2700, -49000, 0, 0, 180,
+    4, 245, 230, 215);
+  add_walk_sector(-6000, -48800, 6000, -38100, 2700, 9600, 0);
+
+  emit_solid_wall(-6800, 2700, -49500, -6100, 8800, -36500, 1, 2600, 135, 220);
+  emit_solid_wall(6100, 2700, -49500, 6800, 8800, -36500, 1, 2600, 135, 220);
+  emit_solid_wall(-6800, 2700, -49600, 6800, 8800, -48900, 1, 2600, 135, 220);
+
+  emit_monumental_pillar(-3400, 2700, 8600, -43500, 680);
+  emit_monumental_pillar(3400, 2700, 8600, -43500, 680);
+  emit_wall_torch(-5900, 4500, -43500);
+  emit_wall_torch(5900, 4500, -43500);
+
+  // GLOWING ELDER EXIT SLIPGATE ARCH (`X in -1800..+1800, Z = -48200, Y = 2700..6600`)!
+  // Carved stone frame + swirling violet-gold portal surface (`Tex 7` lower half + emissive flag 16!)
+  emit_solid_wall(-2200, 2700, -48600, -1500, 6800, -47800, 3, 1800, 170, 240);
+  emit_solid_wall(1500, 2700, -48600, 2200, 6800, -47800, 3, 1800, 170, 240);
+  emit_box_brush(0, -2300, 6500, -48700, 2300, 7300, -47700, 3, 1800, 240, 225, 200, 180, 250);
+
+  emit_quad_3d(0,
+    -1500, 2700, -48150, 0, 1024, 255,
+    1500, 2700, -48150, 1024, 1024, 255,
+    1500, 6500, -48150, 1024, 512, 255,
+    -1500, 6500, -48150, 0, 512, 255,
+    7 + 16, 255, 255, 255);
+
+  // Violet-Gold Slipgate Point Light!
+  let pg_lb = 8000 + mem_load(23) * 8;
+  mem_store(pg_lb, 0);
+  mem_store(pg_lb + 1, 4400);
+  mem_store(pg_lb + 2, -47200);
+  mem_store(pg_lb + 3, 10500);
+  mem_store(pg_lb + 4, 215);
+  mem_store(pg_lb + 5, 130);
+  mem_store(pg_lb + 6, 255);
+  mem_store(pg_lb + 7, 1);
+  mem_store(23, mem_load(23) + 1);
+}
+
+// ============================================================================
+// ARTICULATED 3D POLYGONAL MONSTERS & 3D TWIN-BARREL SUPER-SHOTGUN VIEWMODEL
+// ============================================================================
+
+// Emits a tapered smooth-shaded 3D organic/armored segment rotated around Y by `yaw`!
+fn emit_tapered_limb(
+  buf_kind: i64,
+  cx: i64, cy: i64, cz: i64, yaw: i64,
+  bx0: i64, bz0: i64, bx1: i64, bz1: i64,
+  tx0: i64, tz0: i64, tx1: i64, tz1: i64,
+  ly0: i64, ly1: i64,
+  tex_flags: i64,
+  u0: i64, v0: i64, u1: i64, v1: i64,
+  tr: i64, tg: i64, tb: i64
+) -[Mem]-> unit {
+  let c = fast_cos(yaw);
+  let s = fast_sin(yaw);
+
+  // Bottom 4 rotated corners
+  let x00b = cx + ((bx0 * c + bz0 * s) >> 10);
+  let z00b = cz + ((-bx0 * s + bz0 * c) >> 10);
+  let x10b = cx + ((bx1 * c + bz0 * s) >> 10);
+  let z10b = cz + ((-bx1 * s + bz0 * c) >> 10);
+  let x11b = cx + ((bx1 * c + bz1 * s) >> 10);
+  let z11b = cz + ((-bx1 * s + bz1 * c) >> 10);
+  let x01b = cx + ((bx0 * c + bz1 * s) >> 10);
+  let z01b = cz + ((-bx0 * s + bz1 * c) >> 10);
+
+  // Top 4 rotated corners
+  let x00t = cx + ((tx0 * c + tz0 * s) >> 10);
+  let z00t = cz + ((-tx0 * s + tz0 * c) >> 10);
+  let x10t = cx + ((tx1 * c + tz0 * s) >> 10);
+  let z10t = cz + ((-tx1 * s + tz0 * c) >> 10);
+  let x11t = cx + ((tx1 * c + tz1 * s) >> 10);
+  let z11t = cz + ((-tx1 * s + tz1 * c) >> 10);
+  let x01t = cx + ((tx0 * c + tz1 * s) >> 10);
+  let z01t = cz + ((-tx0 * s + tz1 * c) >> 10);
+
+  // Smooth outward diagonal corner normals rotated by `yaw` for organic 3D Phong/bump shading!
+  let n00 = pack_norm(((-88 * c - 88 * s) >> 10), 22, ((88 * s - 88 * c) >> 10));
+  let n10 = pack_norm(((88 * c - 88 * s) >> 10), 22, ((-88 * s - 88 * c) >> 10));
+  let n11 = pack_norm(((88 * c + 88 * s) >> 10), 22, ((-88 * s + 88 * c) >> 10));
+  let n01 = pack_norm(((-88 * c + 88 * s) >> 10), 22, ((88 * s + 88 * c) >> 10));
+  let nt00 = pack_norm(((-70 * c - 70 * s) >> 10), 72, ((70 * s - 70 * c) >> 10));
+  let nt10 = pack_norm(((70 * c - 70 * s) >> 10), 72, ((-70 * s - 70 * c) >> 10));
+  let nt11 = pack_norm(((70 * c + 70 * s) >> 10), 72, ((-70 * s + 70 * c) >> 10));
+  let nt01 = pack_norm(((-70 * c + 70 * s) >> 10), 72, ((70 * s + 70 * c) >> 10));
+
+  let y_b = cy + ly0;
+  let y_t = cy + ly1;
+
+  emit_smooth_quad_3d(buf_kind, x01b, y_b, z01b, n01, u0, v1, 180, x11b, y_b, z11b, n11, u1, v1, 180, x11t, y_t, z11t, nt11, u1, v0, 248, x01t, y_t, z01t, nt01, u0, v0, 248, tex_flags, tr, tg, tb);
+  emit_smooth_quad_3d(buf_kind, x10b, y_b, z10b, n10, u0, v1, 170, x00b, y_b, z00b, n00, u1, v1, 170, x00t, y_t, z00t, nt00, u1, v0, 238, x10t, y_t, z10t, nt10, u0, v0, 238, tex_flags, tr, tg, tb);
+  emit_smooth_quad_3d(buf_kind, x00b, y_b, z00b, n00, u0, v1, 175, x01b, y_b, z01b, n01, u1, v1, 175, x01t, y_t, z01t, nt01, u1, v0, 242, x00t, y_t, z00t, nt00, u0, v0, 242, tex_flags, tr, tg, tb);
+  emit_smooth_quad_3d(buf_kind, x11b, y_b, z11b, n11, u0, v1, 175, x10b, y_b, z10b, n10, u1, v1, 175, x10t, y_t, z10t, nt10, u1, v0, 242, x11t, y_t, z11t, nt11, u0, v0, 242, tex_flags, tr, tg, tb);
+  emit_smooth_quad_3d(buf_kind, x01t, y_t, z01t, nt01, u0, v1, 252, x11t, y_t, z11t, nt11, u1, v1, 252, x10t, y_t, z10t, nt10, u1, v0, 252, x00t, y_t, z00t, nt00, u0, v0, 252, tex_flags, tr, tg, tb);
+}
+
+// Rotates local `(lx, ly, lz)` around Y by `yaw` (`0..4095`), translates to `(cx, cy, cz)`, and emits a smooth 3D limb!
+fn emit_oriented_limb(
+  buf_kind: i64,
+  cx: i64, cy: i64, cz: i64, yaw: i64,
+  lx0: i64, ly0: i64, lz0: i64,
+  lx1: i64, ly1: i64, lz1: i64,
+  tex_flags: i64,
+  u0: i64, v0: i64, u1: i64, v1: i64,
+  tr: i64, tg: i64, tb: i64
+) -[Mem]-> unit {
+  emit_tapered_limb(
+    buf_kind, cx, cy, cz, yaw,
+    lx0, lz0, lx1, lz1,
+    lx0, lz0, lx1, lz1,
+    ly0, ly1,
+    tex_flags, u0, v0, u1, v1, tr, tg, tb
+  );
+}
+
+// Renders a True 3D Sculpted & Articulated Monster (`kind`: 1=Grunt, 2=Crimson Knight, 3=Pale Fanged Shambler Beast!)
+fn emit_monster_3d(eid: i64) -[Mem]-> unit {
+  if eid >= 0 && eid < 10 {
+    let ea = enemy_addr(eid);
+    let mx = mem_load(ea);
+    let my = mem_load(ea + 1);
+    let mz = mem_load(ea + 2);
+    let kind = mem_load(ea + 3);
+    let state = mem_load(ea + 5);
+    let flash = mem_load(ea + 7);
+    let anim = mem_load(ea + 8);
+    let myaw = mem_load(ea + 9);
+
+    let stride = (fast_sin(anim * 128) * 190) >> 10;
+    let fl_boost = flash * 18;
+
+    if state == 2 {
+      // Fallen 3D Corpse on the dungeon stones!
+      let cr = clamp_byte((if kind == 3 { 210 } else { 155 }) + fl_boost);
+      let cg = if kind == 3 { 180 } else { 48 };
+      let cb = if kind == 3 { 165 } else { 44 };
+      emit_tapered_limb(1, mx, my, mz, myaw, -520, -680, 520, 680, -340, -480, 340, 480, 0, 310, 6, 0, 0, 512, 480, cr, cg, cb);
+    } else {
+      if kind == 3 {
+        // ====================================================================
+        // THE PALE FANGED SHAMBLER BEAST (Screenshot 3 Centerpiece — Sculpted!)
+        // Tapered muscular haunches, massive V-tapered hunched shoulders,
+        // gaping crimson maw with white fangs, & giant bloody 3-clawed arms!
+        // ====================================================================
+        let tr = clamp_byte(242 + fl_boost);
+        let tg = clamp_byte(232 - flash * 12);
+        let tb = clamp_byte(216 - flash * 12);
+
+        // Tapered stomping furred legs + broad crimson-stained claws
+        emit_tapered_limb(1, mx, my, mz, myaw, -460, -180 + stride, -170, 180 + stride, -560, -250 + stride / 2, -120, 250 + stride / 2, 180, 980, 6, 0, 0, 512, 480, tr, tg, tb);
+        emit_tapered_limb(1, mx, my, mz, myaw, 170, -180 - stride, 460, 180 - stride, 120, -250 - stride / 2, 560, 250 - stride / 2, 180, 980, 6, 0, 0, 512, 480, tr, tg, tb);
+        emit_tapered_limb(1, mx, my, mz, myaw, -560, -240 + stride, -110, 360 + stride, -460, -180 + stride, -170, 200 + stride, 0, 220, 6, 0, 540, 512, 980, 185, 34, 32);
+        emit_tapered_limb(1, mx, my, mz, myaw, 110, -240 - stride, 560, 360 - stride, 170, -180 - stride, 460, 200 - stride, 0, 220, 6, 0, 540, 512, 980, 185, 34, 32);
+
+        // V-Tapered waist (`-480..+480`) flaring into colossal hunched furred shoulders (`-840..+840`)!
+        emit_tapered_limb(1, mx, my, mz, myaw, -480, -280, 480, 300, -780, -390, 780, 430, 920, 1820, 6, 0, 0, 1024, 480, tr, tg, tb);
+        emit_tapered_limb(1, mx, my, mz, myaw, -780, -390, 780, 430, -560, -280, 560, 360, 1800, 2440, 6, 0, 0, 1024, 480, tr, tg, tb);
+
+        // Gaping Crimson Maw recessed into the chest/head + Sharp Tapered White Fangs!
+        emit_tapered_limb(1, mx, my, mz, myaw, -340, 340, 340, 520, -300, 320, 300, 500, 1660, 2240, 6, 0, 600, 512, 960, 162, 20, 22);
+        emit_tapered_limb(1, mx, my, mz, myaw, -210, 490, -170, 540, -250, 470, -130, 560, 2020, 2230, 6, 0, 0, 128, 128, 255, 252, 240);
+        emit_tapered_limb(1, mx, my, mz, myaw, -20, 490, 20, 540, -60, 470, 60, 560, 2000, 2230, 6, 0, 0, 128, 128, 255, 252, 240);
+        emit_tapered_limb(1, mx, my, mz, myaw, 170, 490, 210, 540, 130, 470, 250, 560, 2020, 2230, 6, 0, 0, 128, 128, 255, 252, 240);
+        emit_tapered_limb(1, mx, my, mz, myaw, -150, 470, -70, 550, -125, 490, -95, 535, 1670, 1870, 6, 0, 0, 128, 128, 255, 252, 240);
+        emit_tapered_limb(1, mx, my, mz, myaw, 70, 470, 150, 550, 95, 490, 125, 535, 1670, 1870, 6, 0, 0, 128, 128, 255, 252, 240);
+
+        // Huge Outstretched Muscular Biceps + Tapered Bloody 3-Clawed Forearms!
+        let arm_sw = stride / 2;
+        emit_tapered_limb(1, mx, my, mz, myaw, -1140, -60 - arm_sw, -760, 320 - arm_sw, -980, -160 - arm_sw, -680, 220 - arm_sw, 1420, 2220, 6, 0, 0, 512, 480, tr, tg, tb);
+        emit_tapered_limb(1, mx, my, mz, myaw, 760, -60 + arm_sw, 1140, 320 + arm_sw, 680, -160 + arm_sw, 980, 220 + arm_sw, 1420, 2220, 6, 0, 0, 512, 480, tr, tg, tb);
+        // Wicked crimson claws reaching forward!
+        emit_tapered_limb(1, mx, my, mz, myaw, -1080, 420 - arm_sw, -840, 740 - arm_sw, -1160, 120 - arm_sw, -760, 420 - arm_sw, 1060, 1520, 6, 0, 600, 512, 980, 204, 26, 26);
+        emit_tapered_limb(1, mx, my, mz, myaw, 840, 420 + arm_sw, 1080, 740 + arm_sw, 760, 120 + arm_sw, 1160, 420 + arm_sw, 1060, 1520, 6, 0, 600, 512, 980, 204, 26, 26);
+      } else {
+        if kind == 2 {
+          // ==================================================================
+          // CRIMSON CITADEL KNIGHT (Screenshot 3 Horned Red/Steel Warrior!)
+          // ==================================================================
+          let kr = clamp_byte(238 + fl_boost);
+          // Tapered Armored Greaves
+          emit_tapered_limb(1, mx, my, mz, myaw, -250, -110 + stride, -90, 110 + stride, -300, -140 + stride / 2, -65, 140 + stride / 2, 0, 840, 6, 0, 520, 512, 1000, 195, 175, 70);
+          emit_tapered_limb(1, mx, my, mz, myaw, 90, -110 - stride, 250, 110 - stride, 65, -140 - stride / 2, 300, 140 - stride / 2, 0, 840, 6, 0, 520, 512, 1000, 195, 175, 70);
+          // V-Tapered Crimson Enameled Chest Cuirass + Flared Steel Pauldrons
+          emit_tapered_limb(1, mx, my, mz, myaw, -260, -160, 260, 180, -390, -220, 390, 240, 820, 1600, 6, 0, 560, 512, 980, kr, 56, 56);
+          emit_tapered_limb(1, mx, my, mz, myaw, -580, -190, -340, 190, -440, -150, -310, 150, 1340, 1680, 7, 0, 0, 450, 450, 182, 188, 202);
+          emit_tapered_limb(1, mx, my, mz, myaw, 340, -190, 580, 190, 310, -150, 440, 150, 1340, 1680, 7, 0, 0, 450, 450, 182, 188, 202);
+          // Sculpted Great-Helm + Twin Curved Horns + Glowing Visor Slit + Forged Broadsword!
+          emit_tapered_limb(1, mx, my, mz, myaw, -190, -175, 190, 195, -145, -145, 145, 160, 1580, 1980, 7, 0, 0, 450, 450, 172, 178, 192);
+          emit_tapered_limb(1, mx, my, mz, myaw, -220, -40, -150, 40, -320, 40, -260, 110, 1840, 2140, 7, 560, 0, 960, 450, 225, 190, 95);
+          emit_tapered_limb(1, mx, my, mz, myaw, 150, -40, 220, 40, 260, 40, 320, 110, 1840, 2140, 7, 560, 0, 960, 450, 225, 190, 95);
+          emit_oriented_limb(1, mx, my, mz, myaw, -125, 1720, 185, 125, 1790, 212, 7 + 16, 600, 0, 900, 200, 255, 135, 35);
+          // Swinging Right Sword Arm + Tapered Steel Broadsword
+          emit_tapered_limb(1, mx, my, mz, myaw, 350, 140 + stride / 2, 500, 380 + stride / 2, 340, -80 + stride / 2, 520, 160 + stride / 2, 980, 1440, 6, 0, 560, 512, 980, kr, 64, 64);
+          emit_tapered_limb(1, mx, my, mz, myaw, 405, 330 + stride / 2, 455, 490 + stride / 2, 422, 420 + stride / 2, 438, 540 + stride / 2, 1120, 2040, 7, 0, 0, 450, 450, 232, 238, 250);
+        } else {
+          // ==================================================================
+          // TECH-BASE SHOTGUN GRUNT (Screenshot 3 Right Guard!)
+          // ==================================================================
+          let gr = clamp_byte(178 + fl_boost);
+          emit_tapered_limb(1, mx, my, mz, myaw, -230, -105 + stride, -75, 105 + stride, -270, -130 + stride / 2, -55, 130 + stride / 2, 0, 790, 2, 0, 0, 512, 512, 138, 126, 88);
+          emit_tapered_limb(1, mx, my, mz, myaw, 75, -105 - stride, 230, 105 - stride, 55, -130 - stride / 2, 270, 130 - stride / 2, 0, 790, 2, 0, 0, 512, 512, 138, 126, 88);
+          emit_tapered_limb(1, mx, my, mz, myaw, -250, -155, 250, 175, -340, -195, 340, 215, 780, 1500, 3, 0, 0, 512, 512, gr, 160, 126);
+          emit_tapered_limb(1, mx, my, mz, myaw, -175, -160, 175, 175, -140, -135, 140, 145, 1490, 1840, 7, 0, 0, 450, 450, 146, 152, 140);
+          emit_oriented_limb(1, mx, my, mz, myaw, -130, 1615, 168, 130, 1685, 195, 7 + 16, 650, 0, 950, 200, 255, 195, 55);
+          // Two sculpted arms + 3D Blaster Shotgun protruding forward!
+          emit_tapered_limb(1, mx, my, mz, myaw, -410, 120, -290, 340, -450, -80, -310, 140, 1020, 1440, 3, 0, 0, 256, 256, gr, 148, 118);
+          emit_tapered_limb(1, mx, my, mz, myaw, 290, 120, 410, 340, 310, -80, 450, 140, 1020, 1440, 3, 0, 0, 256, 256, gr, 148, 118);
+          emit_tapered_limb(1, mx, my, mz, myaw, -75, 150, 105, 820, -55, 150, 85, 820, 1110, 1250, 7, 0, 0, 450, 450, 98, 106, 120);
+        };
+      };
+    };
+  } else { () }
+}
+
+// Emits an 8-Sided Smooth-Shaded Cylindrical Barrel/Tube along Viewmodel Z (`z0 .. z1`)!
+fn emit_gun_cylinder_z(
+  cx: i64, cy: i64, z0: i64, z1: i64,
+  rx: i64, ry: i64,
+  u0: i64, u1: i64, v0: i64, v1: i64,
+  tr: i64, tg: i64, tb: i64
+) -[Mem]-> unit {
+  let mut seg = 0;
+  while seg < 8 max 8 {
+    let a0 = seg * 512;
+    let a1 = (seg + 1) * 512;
+    let c0 = fast_cos(a0);
+    let s0 = fast_sin(a0);
+    let c1 = fast_cos(a1);
+    let s1 = fast_sin(a1);
+
+    let x0 = cx + ((rx * c0) >> 10);
+    let y0 = cy + ((ry * s0) >> 10);
+    let x1 = cx + ((rx * c1) >> 10);
+    let y1 = cy + ((ry * s1) >> 10);
+
+    let n0 = pack_norm((c0 * 126) >> 10, (s0 * 126) >> 10, 12);
+    let n1 = pack_norm((c1 * 126) >> 10, (s1 * 126) >> 10, 12);
+    let su0 = u0 + ((u1 - u0) * seg) / 8;
+    let su1 = u0 + ((u1 - u0) * (seg + 1)) / 8;
+    let ao0 = 155 + ((s0 + 1024) * 48) / 1024;
+    let ao1 = 155 + ((s1 + 1024) * 48) / 1024;
+
+    emit_smooth_quad_3d(2,
+      x0, y0, z1, n0, su0, v1, ao0,
+      x1, y1, z1, n1, su1, v1, ao1,
+      x1, y1, z0, n1, su1, v0, ao1,
+      x0, y0, z0, n0, su0, v0, ao0,
+      7, tr, tg, tb);
+    seg = seg + 1;
+  }
+}
+
+// Emits the Detailed 3D Cylindrical Twin-Barrel Super-Shotgun Viewmodel (Screenshot 2!)
+fn emit_supershotgun_viewmodel_3d(recoil: i64, muzzle: i64, bob_x: i64, bob_y: i64) -[Mem]-> unit {
+  mem_store(22, 0);
+  // View-space coordinates (mm): X right, Y up, -Z into screen!
+  let bx = bob_x;
+  let by = -315 - bob_y - recoil * 6;
+  let bz = recoil * 22;
+
+  // 1. Heavy Dark Machined Receiver Housing across foreground (`u in 0..450` pure gunmetal!)
+  emit_tapered_limb(2, bx, by, bz, 0,
+    -178, -560, 178, -300,
+    -148, -560, 148, -300,
+    -98, 28, 7, 30, 60, 440, 460, 152, 158, 174);
+
+  // 2. Twin Smooth-Shaded Cylindrical Blued-Steel Barrels with Machined Cooling Slots (`v: 480..980`!)
+  emit_gun_cylinder_z(bx - 104, by - 4, bz - 1240, bz - 520, 48, 48, 40, 460, 480, 980, 196, 204, 222);
+  emit_gun_cylinder_z(bx + 104, by - 4, bz - 1240, bz - 520, 48, 48, 40, 460, 480, 980, 196, 204, 222);
+
+  // Dark Muzzle Bore Interiors at `Z = bz - 1242`
+  emit_quad_3d(2, bx - 134, by - 34, bz - 1242, 40, 40, 40, bx - 74, by - 34, bz - 1242, 120, 40, 40, bx - 74, by + 26, bz - 1242, 120, 120, 40, bx - 134, by + 26, bz - 1242, 40, 120, 40, 7, 18, 20, 24);
+  emit_quad_3d(2, bx + 74, by - 34, bz - 1242, 40, 40, 40, bx + 134, by - 34, bz - 1242, 120, 40, 40, bx + 134, by + 26, bz - 1242, 120, 120, 40, bx + 74, by + 26, bz - 1242, 40, 120, 40, 7, 18, 20, 24);
+
+  // Slotted Upper Ventilated Rib Shrouds along both barrels (Screenshot 2 signature detail!)
+  emit_tapered_limb(2, bx, by, bz, 0,
+    -136, -1210, -72, -560,
+    -124, -1210, -84, -560,
+    42, 68, 7, 40, 520, 440, 980, 146, 152, 166);
+  emit_tapered_limb(2, bx, by, bz, 0,
+    72, -1210, 136, -560,
+    84, -1210, 124, -560,
+    42, 68, 7, 40, 520, 440, 980, 146, 152, 166);
+
+  // 3. Twin Gleaming Cylindrical Brass Shells / Copper Feed Tubes nestled inside (`u in 580..980` pure brass!)
+  emit_gun_cylinder_z(bx - 56, by + 22, bz - 1060, bz - 530, 22, 22, 580, 980, 40, 960, 255, 214, 102);
+  emit_gun_cylinder_z(bx + 56, by + 22, bz - 1060, bz - 530, 22, 22, 580, 980, 40, 960, 255, 214, 102);
+  // Central Ribbed Bronze Recoil Rod between barrels
+  emit_gun_cylinder_z(bx, by - 12, bz - 1040, bz - 530, 24, 24, 580, 980, 40, 960, 220, 174, 86);
+
+  // 4. 3D Volumetric Muzzle Blast Star at barrel tips when firing!
+  if muzzle > 2 {
+    let s = muzzle * 38;
+    emit_quad_3d(2,
+      bx - 160 - s, by - s, bz - 1260, 650, 128, 255,
+      bx + 160 + s, by - s, bz - 1260, 950, 128, 255,
+      bx + 160 + s, by + s, bz - 1260, 950, 0, 255,
+      bx - 160 - s, by + s, bz - 1260, 650, 0, 255,
+      7 + 16, 255, 215, 90);
+  } else { () }
+}
+
+// ============================================================================
+// SPAWNING, 3D COLLISION / STAIR PHYSICS, PARTICLES & COMBAT AI
+// ============================================================================
+
+fn spawn_monster_3d(eid: i64, x: i64, y: i64, z: i64, kind: i64, hp: i64, yaw: i64) -[Mem]-> unit {
+  if eid >= 0 && eid < 10 {
+    let ea = enemy_addr(eid);
+    mem_store(ea, x);
+    mem_store(ea + 1, y);
+    mem_store(ea + 2, z);
+    mem_store(ea + 3, kind);
+    mem_store(ea + 4, hp);
+    mem_store(ea + 5, 0);
+    mem_store(ea + 6, 30 + eid * 5);
+    mem_store(ea + 7, 0);
+    mem_store(ea + 8, eid * 3);
+    mem_store(ea + 9, yaw & 4095);
+  } else { () }
+}
+
+fn spawn_pickup_3d(iid: i64, x: i64, y: i64, z: i64, kind: i64) -[Mem]-> unit {
+  if iid >= 0 && iid < 10 {
+    let ia = item_addr(iid);
+    mem_store(ia, x);
+    mem_store(ia + 1, y);
+    mem_store(ia + 2, z);
+    mem_store(ia + 3, kind);
+    mem_store(ia + 4, 1);
+  } else { () }
+}
+
+fn spawn_burst_particles(x: i64, y: i64, z: i64, is_blood: i64) -[Mem]-> unit {
+  let mut k = 0;
+  while k < 12 max 12 {
+    // Find free or overwrite round-robin particle slot (`0..63`)
+    let slot = (mem_load(0) * 7 + k * 5) & 63;
+    let pb = 6800 + slot * 8;
+    let r = next_rand();
+    mem_store(pb, x);
+    mem_store(pb + 1, y);
+    mem_store(pb + 2, z);
+    mem_store(pb + 3, ((r & 127) - 64) * 2);
+    mem_store(pb + 4, 55 + ((r >> 7) & 63));
+    mem_store(pb + 5, (((r >> 13) & 127) - 64) * 2);
+    let col = if is_blood == 1 {
+      pack_tint_ao(215, 24, 24, 255)
+    } else {
+      pack_tint_ao(255, 208, 86, 255)
+    };
+    mem_store(pb + 6, col);
+    mem_store(pb + 7, 18 + (k & 7));
+    k = k + 1;
+  }
+}
+
+fn populate_entities() -[Mem]-> unit {
+  // Canyon Guards (Zone 1 — facing +Z toward incoming player!)
+  spawn_monster_3d(0, -1200, 0, -6800, 1, 40, 0);
+  spawn_monster_3d(1, 1600, 0, -11200, 2, 75, 0);
+
+  // Gothic Rafter Hall Ambush (Zone 2 — Grunts + Horned Crimson Knights + Pale Fanged Shambler!)
+  spawn_monster_3d(2, -2300, 1800, -23200, 1, 45, 180);
+  spawn_monster_3d(3, 1900, 1800, -23800, 2, 80, 3920);
+  spawn_monster_3d(4, -350, 1800, -25800, 3, 165, 60); // Iconic Centerpiece Shambler facing player!
+  spawn_monster_3d(5, 6400, 1840, -27000, 1, 45, 3200);
+  spawn_monster_3d(6, -3200, 1800, -33500, 2, 85, 0);
+
+  // Sanctum of the Elder Slipgate (Zone 3 — Twin Guards + Elder Shambler Boss!)
+  spawn_monster_3d(7, -2800, 2700, -41500, 1, 50, 0);
+  spawn_monster_3d(8, 2800, 2700, -41500, 2, 90, 0);
+  spawn_monster_3d(9, 0, 2700, -45200, 3, 210, 0);
+
+  // Pickups (1 = Medkit +30 HP, 2 = Shells +8, 3 = Crimson/Bronze Armor +50)
+  spawn_pickup_3d(0, -2600, 0, -3200, 2);
+  spawn_pickup_3d(1, 2100, 0, -9500, 1);
+  spawn_pickup_3d(2, 0, 1800, -19500, 3);
+  spawn_pickup_3d(3, -4200, 1800, -26500, 1);
+  spawn_pickup_3d(4, 6800, 1840, -27000, 2);
+  spawn_pickup_3d(5, 2200, 1800, -33000, 1);
+  spawn_pickup_3d(6, -4200, 2700, -40000, 2);
+  spawn_pickup_3d(7, 4200, 2700, -40000, 3);
+  spawn_pickup_3d(8, 0, 2700, -39500, 1);
+  spawn_pickup_3d(9, -1200, 3380, -3800, 3); // Bonus Armor up on the Wooden Bridge!
+
+  let mut p = 0;
+  while p < 64 max 64 {
+    mem_store(6800 + p * 8 + 7, 0);
+    p = p + 1;
+  }
+}
+
+fn hits_wall_3d(px: i64, py: i64, pz: i64, rad: i64) -[Mem]-> bool {
+  let cnt = mem_load(29);
+  let mut hit = false;
+  let mut i = 0;
+  while i < cnt && !hit max 70 {
+    let b = 5400 + i * 8;
+    let x0 = mem_load(b) - rad;
+    let z0 = mem_load(b + 1) - rad;
+    let x1 = mem_load(b + 2) + rad;
+    let z1 = mem_load(b + 3) + rad;
+    let y0 = mem_load(b + 4);
+    let y1 = mem_load(b + 5);
+    if px >= x0 && px <= x1 && pz >= z0 && pz <= z1 && py + 1500 > y0 && py + 380 < y1 {
+      hit = true;
+    } else { () };
+    i = i + 1;
+  }
+  hit
+}
+
+fn find_floor_below(px: i64, py: i64, pz: i64) -[Mem]-> i64 {
+  let cnt = mem_load(28);
+  let mut best_y = -20000;
+  let mut i = 0;
+  while i < cnt max 50 {
+    let b = 5000 + i * 8;
+    if px >= mem_load(b) && px <= mem_load(b + 2) && pz >= mem_load(b + 1) && pz <= mem_load(b + 3) {
+      let fy = mem_load(b + 4);
+      // Allow stepping up stairs up to +420mm above current foot_y!
+      if fy <= py + 420 && fy > best_y {
+        best_y = fy;
+      } else { () };
+    } else { () };
+    i = i + 1;
+  }
+  if best_y < -10000 { 0 } else { best_y }
+}
+
+fn save_snapshot_3d() -[Mem]-> unit {
+  let head = mem_load(24);
   let slot = if head < 0 { 0 } else { if head >= 120 { 0 } else { head } };
   let base = snap_addr(slot);
 
   let mut h = 0;
-  while h < 16 max 16 {
+  while h < 20 max 20 {
     mem_store(base + h, mem_load(h));
     h = h + 1;
   }
-  mem_store(base + 18, mem_load(18));
+  mem_store(base + 26, mem_load(26));
 
   let mut e = 0;
-  while e >= 0 && e < 8 max 8 {
+  while e >= 0 && e < 10 max 10 {
     let ea = enemy_addr(e);
-    let da = base + 24 + e * 8;
+    let da = base + 32 + e * 12;
     let mut f = 0;
-    while f < 8 max 8 {
+    while f < 10 max 10 {
       mem_store(da + f, mem_load(ea + f));
       f = f + 1;
     }
@@ -370,33 +1355,33 @@ fn save_combat_snapshot() -[Mem]-> unit {
   }
 
   let mut it = 0;
-  while it >= 0 && it < 8 max 8 {
+  while it >= 0 && it < 10 max 10 {
     let ia = item_addr(it);
-    mem_store(base + 96 + it, mem_load(ia + 3));
+    mem_store(base + 160 + it, mem_load(ia + 4));
     it = it + 1;
   }
 
   let nxt = if slot + 1 >= 120 { 0 } else { slot + 1 };
-  mem_store(16, nxt);
-  let cnt = mem_load(17);
+  mem_store(24, nxt);
+  let cnt = mem_load(25);
   if cnt < 120 {
-    mem_store(17, cnt + 1);
+    mem_store(25, cnt + 1);
   } else { () }
 }
 
-export fn init_game(seed: i64) -[Mem]-> i64 {
+export fn init_game(seed: i64) -[Mem, Gpu]-> i64 {
   let clean_seed = if seed <= 0 { 19960622 } else { seed & 0x7FFFFFFF };
   mem_store(0, 0);
-  mem_store(1, 3 * 1024 + 512);
-  mem_store(2, 4 * 1024 + 512);
-  mem_store(3, 0); // Facing East down the Slipgate Bunker toward the corridor!
-  mem_store(4, 100);
-  mem_store(5, 25);
-  mem_store(6, 24);
+  mem_store(1, -600);
+  mem_store(2, 1680);
+  mem_store(3, 1800);
+  mem_store(4, 165);  // Slightly angled right toward the sunlit wall, pillars & overhead bridge!
+  mem_store(5, 105);  // Slight upward gaze so the slatted wooden sky-bridge & pillars frame the view immediately!
+  mem_store(6, 0);
   mem_store(7, 0);
-  mem_store(8, 0);
-  mem_store(9, 0);
-  mem_store(10, 0);
+  mem_store(8, 100);
+  mem_store(9, 50);
+  mem_store(10, 28);
   mem_store(11, 0);
   mem_store(12, 0);
   mem_store(13, 0);
@@ -404,69 +1389,77 @@ export fn init_game(seed: i64) -[Mem]-> i64 {
   mem_store(15, 0);
   mem_store(16, 0);
   mem_store(17, 0);
-  mem_store(18, clean_seed);
+  mem_store(18, 0);
   mem_store(19, 0);
+  mem_store(21, 0);
+  mem_store(22, 0);
+  mem_store(24, 0);
+  mem_store(25, 0);
+  mem_store(26, clean_seed);
+  mem_store(27, 1);
 
-  init_trig_tables();
-  bake_procedural_textures();
-  build_slipgate_level();
-  save_combat_snapshot();
-  render_3d_frame()
+  init_trig_4096();
+  bake_hd_textures();
+  build_citadel_3d_world();
+  populate_entities();
+  build_dynamic_scene();
+  save_snapshot_3d();
+
+  do Gpu.submit(mem_load(20), mem_load(21));
+  262144
 }
 
-fn is_solid(wx: i64, wy: i64) -[Mem]-> bool {
-  let tx = wx >> 10;
-  let ty = wy >> 10;
-  if tx < 0 || tx >= 24 || ty < 0 || ty >= 24 {
-    true
-  } else {
-    mem_load(128 + map_idx(tx, ty)) > 0
-  }
+fn damage_player(raw_dmg: i64) -[Mem]-> unit {
+  let arm = mem_load(9);
+  let absorb = if arm > 0 { (raw_dmg * 3) / 5 } else { 0 };
+  let act = if absorb > arm { arm } else { absorb };
+  let loss = raw_dmg - act;
+  mem_store(9, arm - act);
+  let nhp = clamp_stat(mem_load(8) - loss, 100);
+  mem_store(8, nhp);
+  mem_store(15, 10);
+  mem_store(19, mem_load(19) | 16);
+  if nhp <= 0 {
+    mem_store(18, 2);
+  } else { () }
 }
 
-fn has_line_of_sight(x0: i64, y0: i64, x1: i64, y1: i64) -[Mem]-> bool {
-  let mut ok = true;
-  let mut s = 1;
-  while s < 16 && ok max 16 {
-    let mx = x0 + ((x1 - x0) * s) / 16;
-    let my = y0 + ((y1 - y0) * s) / 16;
-    if is_solid(mx, my) {
-      ok = false;
-    } else { () };
-    s = s + 1;
-  }
-  ok
-}
+fn fire_supershotgun_3d(cx: i64, cy: i64, cz: i64, yaw: i64, pitch: i64) -[Mem]-> unit {
+  let ammo = mem_load(10);
+  if ammo > 0 && mem_load(14) == 0 {
+    mem_store(10, ammo - 1);
+    mem_store(13, 7);  // Dynamic orange muzzle point-light!
+    mem_store(14, 16); // Recoil + pump!
+    mem_store(19, mem_load(19) | 1);
 
-fn fire_double_shotgun(px: i64, py: i64, pang: i64) -[Mem]-> unit {
-  let ammo = mem_load(6);
-  if ammo > 0 && mem_load(10) == 0 {
-    mem_store(6, ammo - 1);
-    mem_store(9, 7);   // Dynamic orange muzzle-flash light!
-    mem_store(10, 16); // Boomstick recoil + pump cycle
-    mem_store(15, mem_load(15) | 1); // Bit 0: Double-Barrel Shotgun Boom!
+    let cp = fast_cos(pitch);
+    let sp = fast_sin(pitch);
+    let dx = (fast_sin(yaw) * cp) >> 10;
+    let dy = sp;
+    let dz = (-fast_cos(yaw) * cp) >> 10;
 
-    let dir_x = fast_cos(pang);
-    let dir_y = fast_sin(pang);
-
-    // Hitscan pellet cone check against all living enemies with line-of-sight!
     let mut best_e = -1;
-    let mut best_dist = 999999;
+    let mut best_t = 32000;
 
     let mut e = 0;
-    while e >= 0 && e < 8 max 8 {
+    while e >= 0 && e < 10 max 10 {
       let ea = enemy_addr(e);
-      if mem_load(ea + 4) != 2 {
+      if mem_load(ea + 5) != 2 {
         let ex = mem_load(ea);
-        let ey = mem_load(ea + 1);
-        let dx = ex - px;
-        let dy = ey - py;
-        let fwd = (dx * dir_x + dy * dir_y) / 1024;
-        let lat = abs_val((-dx * dir_y + dy * dir_x) / 1024);
-        // Wide buckshot spread cone (`lat < 360 + fwd / 7`)
-        if fwd > 120 && fwd < 12000 && lat < 340 + fwd / 8 {
-          if fwd < best_dist && has_line_of_sight(px, py, ex, ey) {
-            best_dist = fwd;
+        let ey = mem_load(ea + 1) + (if mem_load(ea + 3) == 3 { 1450 } else { 1050 });
+        let ez = mem_load(ea + 2);
+        let rx = ex - cx;
+        let ry = ey - cy;
+        let rz = ez - cz;
+
+        let t_proj = (rx * dx + ry * dy + rz * dz) >> 10;
+        if t_proj > 300 && t_proj < best_t {
+          let hit_x = cx + ((dx * t_proj) >> 10);
+          let hit_y = cy + ((dy * t_proj) >> 10);
+          let hit_z = cz + ((dz * t_proj) >> 10);
+          let spread = (if mem_load(ea + 3) == 3 { 980 } else { 640 }) + (t_proj >> 5);
+          if abs_val(hit_x - ex) < spread && abs_val(hit_y - ey) < spread + 350 && abs_val(hit_z - ez) < spread {
+            best_t = t_proj;
             best_e = e;
           } else { () };
         } else { () };
@@ -474,135 +1467,232 @@ fn fire_double_shotgun(px: i64, py: i64, pang: i64) -[Mem]-> unit {
       e = e + 1;
     }
 
-    if best_e >= 0 && best_e < 8 {
+    if best_e >= 0 && best_e < 10 {
       let ta = enemy_addr(best_e);
-      // Point-blank double-barrel blast deals massive meaty damage!
-      let raw_dmg = 58 - best_dist / 220;
-      let dmg = if raw_dmg < 22 { 22 } else { raw_dmg };
-      let nhp = mem_load(ta + 3) - dmg;
-      mem_store(ta + 6, 8); // Hit flash!
-      mem_store(ta + 4, 1); // Aggro!
+      let raw_dmg = 68 - (best_t >> 9);
+      let dmg = if raw_dmg < 26 { 26 } else { raw_dmg };
+      let nhp = mem_load(ta + 4) - dmg;
+      mem_store(ta + 7, 8);
+      mem_store(ta + 5, 1);
+      spawn_burst_particles(mem_load(ta), mem_load(ta + 1) + 1200, mem_load(ta + 2), 1);
       if nhp <= 0 {
-        mem_store(ta + 3, 0);
-        mem_store(ta + 4, 2); // Dead!
-        mem_store(7, mem_load(7) + 1);
-        mem_store(15, mem_load(15) | 4); // Bit 2: Monster Death Roar!
+        mem_store(ta + 4, 0);
+        mem_store(ta + 5, 2);
+        mem_store(11, mem_load(11) + 1);
+        mem_store(19, mem_load(19) | 4);
       } else {
-        mem_store(ta + 3, nhp);
-        mem_store(15, mem_load(15) | 2); // Bit 1: Pellet Impact / Monster Pain!
+        mem_store(ta + 4, nhp);
+        mem_store(19, mem_load(19) | 2);
       };
-    } else { () };
+    } else {
+      // Wall spark ricochet burst ahead of aim ray!
+      let sp_x = cx + ((dx * 4500) >> 10);
+      let sp_y = cy + ((dy * 4500) >> 10);
+      let sp_z = cz + ((dz * 4500) >> 10);
+      spawn_burst_particles(sp_x, sp_y, sp_z, 0);
+    };
   } else { () }
 }
 
-fn damage_player(raw_dmg: i64) -[Mem]-> unit {
-  let arm = mem_load(5);
-  let absorb = if arm > 0 { (raw_dmg * 3) / 5 } else { 0 };
-  let actual_abs = if absorb > arm { arm } else { absorb };
-  let hp_loss = raw_dmg - actual_abs;
-  mem_store(5, arm - actual_abs);
-  let nhp = clamp_stat(mem_load(4) - hp_loss, 100);
-  mem_store(4, nhp);
-  mem_store(11, 9);
-  mem_store(15, mem_load(15) | 16); // Bit 4: Player Hurt Grunt!
-  if nhp <= 0 {
-    mem_store(14, 2);
-  } else { () }
+fn build_dynamic_scene() -[Mem]-> unit {
+  mem_store(21, 0);
+  let tick = mem_load(0);
+
+  // 1. Emit all 10 3D Articulated Monsters
+  let mut e = 0;
+  while e >= 0 && e < 10 max 10 {
+    emit_monster_3d(e);
+    e = e + 1;
+  }
+
+  // 2. Emit 3D Rotating Pickups (Medkits, Shell Crates, Crimson/Bronze Armor)
+  let spin = (tick * 24) & 4095;
+  let mut it = 0;
+  while it >= 0 && it < 10 max 10 {
+    let ia = item_addr(it);
+    if mem_load(ia + 4) == 1 {
+      let ix = mem_load(ia);
+      let iy = mem_load(ia + 1) + 180 + ((fast_sin(tick * 64 + it * 400) * 90) >> 10);
+      let iz = mem_load(ia + 2);
+      let ik = mem_load(ia + 3);
+      if ik == 1 {
+        // White 3D Medkit with Crimson Cross
+        emit_oriented_limb(1, ix, iy, iz, spin, -240, 0, -240, 240, 320, 240, 3, 0, 0, 256, 256, 235, 238, 242);
+        emit_oriented_limb(1, ix, iy + 320, iz, spin, -70, 0, -210, 70, 50, 210, 6 + 16, 0, 600, 256, 900, 235, 38, 38);
+        emit_oriented_limb(1, ix, iy + 320, iz, spin, -210, 0, -70, 210, 50, 70, 6 + 16, 0, 600, 256, 900, 235, 38, 38);
+      } else {
+        if ik == 2 {
+          // Brass-Bound Buckshot Shell Crate
+          emit_oriented_limb(1, ix, iy, iz, spin, -240, 0, -180, 240, 300, 180, 7, 520, 0, 1000, 480, 235, 192, 85);
+        } else {
+          // Floating Crimson/Gold Battle Cuirass Armor
+          emit_oriented_limb(1, ix, iy, iz, spin, -280, 0, -180, 280, 480, 180, 6, 0, 560, 512, 980, 235, 95, 55);
+        };
+      };
+    } else { () };
+    it = it + 1;
+  }
+
+  // 3. Emit Glowing 3D Torch Flames on all flickering torch lights!
+  let lcnt = mem_load(23);
+  let mut li = 0;
+  while li < lcnt max 22 {
+    let lb = 8000 + li * 8;
+    if mem_load(lb + 7) == 1 && mem_load(lb + 4) == 255 && mem_load(lb + 5) == 168 {
+      let fx = mem_load(lb);
+      let fy = mem_load(lb + 1) - 120;
+      let fz = mem_load(lb + 2);
+      let fl_h = 320 + (((tick * 13 + li * 7) & 7) * 22);
+      emit_oriented_limb(1, fx, fy, fz, (tick * 48) & 4095, -85, 0, -85, 85, fl_h, 85, 7 + 16, 650, 0, 950, 200, 255, 195, 65);
+    } else { () };
+    li = li + 1;
+  }
+
+  // 4. Step & Emit 3D Blood / Ricochet Spark Shards
+  let mut p = 0;
+  while p < 64 max 64 {
+    let pb = 6800 + p * 8;
+    let life = mem_load(pb + 7);
+    if life > 0 {
+      let npx = mem_load(pb) + mem_load(pb + 3);
+      let npy = mem_load(pb + 1) + mem_load(pb + 4);
+      let npz = mem_load(pb + 2) + mem_load(pb + 5);
+      mem_store(pb, npx);
+      mem_store(pb + 1, npy);
+      mem_store(pb + 2, npz);
+      mem_store(pb + 4, mem_load(pb + 4) - 9); // Gravity!
+      mem_store(pb + 7, life - 1);
+      let col = mem_load(pb + 6);
+      emit_box_brush(1, npx - 36, npy - 36, npz - 36, npx + 36, npy + 36, npz + 36, 6 + 16, 400, col & 255, (col >> 8) & 255, (col >> 16) & 255, 255, 255);
+    } else { () };
+    p = p + 1;
+  }
+
+  // 5. Emit 3D Twin-Barrel Super-Shotgun Viewmodel
+  let bob_t = mem_load(17);
+  let bob_x = (fast_cos(bob_t >> 1) * 18) >> 10;
+  let bob_y = abs_val((fast_sin(bob_t) * 16) >> 10);
+  emit_supershotgun_viewmodel_3d(mem_load(14), mem_load(13), bob_x, bob_y);
 }
 
 export fn step_fps(
   move_fwd: i64,
   move_strafe: i64,
-  turn_delta: i64,
+  yaw_delta: i64,
+  pitch_delta: i64,
+  jump_in: i64,
   fire_in: i64
-) -[Mem]-> i64 {
-  let state = mem_load(14);
+) -[Mem, Gpu]-> i64 {
+  let state = mem_load(18);
   if state != 0 {
-    render_3d_frame()
+    build_dynamic_scene();
+    do Gpu.submit(mem_load(20), mem_load(21));
+    262144
   } else {
     let tick = mem_load(0) + 1;
     mem_store(0, tick);
 
-    if mem_load(9) > 0 { mem_store(9, mem_load(9) - 1); } else { () };
-    if mem_load(10) > 0 { mem_store(10, mem_load(10) - 1); } else { () };
-    if mem_load(11) > 0 { mem_store(11, mem_load(11) - 1); } else { () };
-    if mem_load(12) > 0 { mem_store(12, mem_load(12) - 1); } else { () };
+    if mem_load(13) > 0 { mem_store(13, mem_load(13) - 1); } else { () };
+    if mem_load(14) > 0 { mem_store(14, mem_load(14) - 1); } else { () };
+    if mem_load(15) > 0 { mem_store(15, mem_load(15) - 1); } else { () };
+    if mem_load(16) > 0 { mem_store(16, mem_load(16) - 1); } else { () };
 
-    let pang = (mem_load(3) + turn_delta) & 1023;
-    mem_store(3, pang);
+    let yaw = (mem_load(4) + yaw_delta) & 4095;
+    let pitch = clamp_pitch(mem_load(5) + pitch_delta);
+    mem_store(4, yaw);
+    mem_store(5, pitch);
 
-    let dir_x = fast_cos(pang);
-    let dir_y = fast_sin(pang);
-    let str_x = -dir_y;
-    let str_y = dir_x;
+    let fwd_x = fast_sin(yaw);
+    let fwd_z = -fast_cos(yaw);
+    let right_x = fast_cos(yaw);
+    let right_z = fast_sin(yaw);
 
-    let spd = 82;
-    let vx = (move_fwd * dir_x * spd + move_strafe * str_x * spd) / 1024;
-    let vy = (move_fwd * dir_y * spd + move_strafe * str_y * spd) / 1024;
+    let spd = 148;
+    let vx = ((move_fwd * fwd_x + move_strafe * right_x) * spd) >> 10;
+    let vz = ((move_fwd * fwd_z + move_strafe * right_z) * spd) >> 10;
 
     let mut px = mem_load(1);
-    let mut py = mem_load(2);
-    let pad = if vx >= 0 { 240 } else { -240 };
-    if !is_solid(px + vx + pad, py - 200) && !is_solid(px + vx + pad, py + 200) {
+    let mut foot_y = mem_load(6);
+    let mut pz = mem_load(3);
+
+    if !hits_wall_3d(px + vx, foot_y, pz, 380) {
       px = px + vx;
     } else { () };
-    let pady = if vy >= 0 { 240 } else { -240 };
-    if !is_solid(px - 200, py + vy + pady) && !is_solid(px + 200, py + vy + pady) {
-      py = py + vy;
+    if !hits_wall_3d(px, foot_y, pz + vz, 380) {
+      pz = pz + vz;
     } else { () };
 
+    // 3D Floor / Stair Elevation + Gravity & Jump!
+    let target_floor = find_floor_below(px, foot_y, pz);
+    let mut vy = mem_load(7);
+    if jump_in > 0 && mem_load(27) == 1 {
+      vy = 135;
+      mem_store(27, 0);
+      mem_store(19, mem_load(19) | 64);
+    } else { () };
+
+    foot_y = foot_y + vy;
+    if foot_y <= target_floor {
+      foot_y = target_floor;
+      vy = 0;
+      mem_store(27, 1);
+    } else {
+      vy = vy - 11;
+      mem_store(27, 0);
+    };
+
+    let mut bob_y = 0;
+    if (move_fwd != 0 || move_strafe != 0) && mem_load(27) == 1 {
+      let nbob = (mem_load(17) + 190) & 4095;
+      mem_store(17, nbob);
+      bob_y = (fast_sin(nbob) * 45) >> 10;
+      if (nbob & 1023) < 190 {
+        mem_store(19, mem_load(19) | 64);
+      } else { () };
+    } else { () };
+
+    let eye_y = foot_y + 1680 + bob_y;
     mem_store(1, px);
-    mem_store(2, py);
+    mem_store(2, eye_y);
+    mem_store(3, pz);
+    mem_store(6, foot_y);
+    mem_store(7, vy);
 
-    if move_fwd != 0 || move_strafe != 0 {
-      let nbob = (mem_load(13) + 3) & 63;
-      mem_store(13, nbob);
-      if (nbob & 15) == 0 {
-        mem_store(15, mem_load(15) | 64); // Bit 6: Metal Grate Footstep!
-      } else { () };
+    // Check Elder Exit Slipgate Arch (`X in -1600..1600, Z <= -47300`)!
+    if abs_val(px) < 1600 && pz <= -47300 {
+      mem_store(18, 1);
+      mem_store(19, mem_load(19) | 128);
     } else { () };
 
-    // Check Exit Slipgate Victory Pad (`tile (4, 21)` right in front of the Glowing Arch `(4, 22)`)!
-    let ptx = px >> 10;
-    let pty = py >> 10;
-    if ptx >= 3 && ptx <= 5 && pty >= 21 {
-      mem_store(14, 1);
-      mem_store(15, mem_load(15) | 128); // Bit 7: Slipgate Warp Victory!
+    // Check Acid Slime Trench Hazard (`X > 4600, foot_y <= 1400`)
+    if px > 4600 && foot_y <= 1400 && (tick & 31) == 0 {
+      damage_player(6);
     } else { () };
 
-    // Check Radioactive Slime floor hazard!
-    if ptx >= 0 && ptx < 24 && pty >= 0 && pty < 24 {
-      if mem_load(704 + map_idx(ptx, pty)) == 1 && (tick & 31) == 0 {
-        damage_player(5);
-      } else { () };
-    } else { () };
-
-    // Check Pickups (Medkits, Shells, Bronze Armor)
+    // Check 3D Pickups
     let mut it = 0;
-    while it >= 0 && it < 8 max 8 {
+    while it >= 0 && it < 10 max 10 {
       let ia = item_addr(it);
-      if mem_load(ia + 3) == 1 {
-        let ix = mem_load(ia);
-        let iy = mem_load(ia + 1);
-        if abs_val(ix - px) < 520 && abs_val(iy - py) < 520 {
-          let ikind = mem_load(ia + 2);
-          if ikind == 1 && mem_load(4) < 100 {
-            mem_store(4, clamp_stat(mem_load(4) + 30, 100));
-            mem_store(ia + 3, 0);
-            mem_store(12, 8);
-            mem_store(15, mem_load(15) | 32);
+      if mem_load(ia + 4) == 1 {
+        if abs_val(mem_load(ia) - px) < 820 && abs_val(mem_load(ia + 1) - foot_y) < 1100 && abs_val(mem_load(ia + 2) - pz) < 820 {
+          let ik = mem_load(ia + 3);
+          if ik == 1 && mem_load(8) < 100 {
+            mem_store(8, clamp_stat(mem_load(8) + 30, 100));
+            mem_store(ia + 4, 0);
+            mem_store(16, 8);
+            mem_store(19, mem_load(19) | 32);
           } else {
-            if ikind == 2 {
-              mem_store(6, clamp_stat(mem_load(6) + 8, 99));
-              mem_store(ia + 3, 0);
-              mem_store(12, 8);
-              mem_store(15, mem_load(15) | 32);
+            if ik == 2 {
+              mem_store(10, clamp_stat(mem_load(10) + 8, 99));
+              mem_store(ia + 4, 0);
+              mem_store(16, 8);
+              mem_store(19, mem_load(19) | 32);
             } else {
-              if ikind == 3 && mem_load(5) < 100 {
-                mem_store(5, clamp_stat(mem_load(5) + 50, 100));
-                mem_store(ia + 3, 0);
-                mem_store(12, 8);
-                mem_store(15, mem_load(15) | 32);
+              if ik == 3 && mem_load(9) < 100 {
+                mem_store(9, clamp_stat(mem_load(9) + 50, 100));
+                mem_store(ia + 4, 0);
+                mem_store(16, 8);
+                mem_store(19, mem_load(19) | 32);
               } else { () };
             };
           };
@@ -612,102 +1702,114 @@ export fn step_fps(
     }
 
     if fire_in > 0 {
-      fire_double_shotgun(px, py, pang);
+      fire_supershotgun_3d(px, eye_y, pz, yaw, pitch);
     } else { () };
 
-    // Step Monster AI (Sight Aggro, Chase, Ranged Plasma / Melee Slash)
+    // Step 3D Monster AI (Aggro, Turn Toward Player, Stalk & Attack!)
     let mut e = 0;
-    while e >= 0 && e < 8 max 8 {
+    while e >= 0 && e < 10 max 10 {
       let ea = enemy_addr(e);
-      if mem_load(ea + 6) > 0 {
-        mem_store(ea + 6, mem_load(ea + 6) - 1);
+      if mem_load(ea + 7) > 0 {
+        mem_store(ea + 7, mem_load(ea + 7) - 1);
       } else { () };
 
-      let est = mem_load(ea + 4);
+      let est = mem_load(ea + 5);
       if est != 2 {
         let ex = mem_load(ea);
         let ey = mem_load(ea + 1);
+        let ez = mem_load(ea + 2);
         let dx = px - ex;
-        let dy = py - ey;
-        let dist_approx = abs_val(dx) + abs_val(dy);
+        let dz = pz - ez;
+        let dist = abs_val(dx) + abs_val(dz);
 
-        if est == 0 && dist_approx < 7500 {
-          if has_line_of_sight(ex, ey, px, py) {
-            mem_store(ea + 4, 1);
-          } else { () };
+        if est == 0 && dist < 16500 && abs_val(foot_y - ey) < 2600 {
+          mem_store(ea + 5, 1);
         } else { () };
 
-        if mem_load(ea + 4) == 1 {
-          mem_store(ea + 7, (mem_load(ea + 7) + 1) & 31);
-          let ekind = mem_load(ea + 2);
-          let espd = if ekind == 2 { 42 } else { 28 };
-          if dist_approx > 850 && dist_approx > 0 {
-            let step_x = (dx * espd) / dist_approx;
-            let step_y = (dy * espd) / dist_approx;
-            if !is_solid(ex + step_x * 4, ey) {
-              mem_store(ea, ex + step_x);
-            } else { () };
-            if !is_solid(mem_load(ea), ey + step_y * 4) {
-              mem_store(ea + 1, ey + step_y);
+        if mem_load(ea + 5) == 1 {
+          mem_store(ea + 8, (mem_load(ea + 8) + 1) & 1023);
+          // Orient monster local +Z (`(sin(yaw), cos(yaw))`) directly toward player!
+          let approx_yaw = if abs_val(dx) > abs_val(dz) {
+            if dx > 0 { 1024 - (dz * 420) / (abs_val(dx) + 1) } else { 3072 + (dz * 420) / (abs_val(dx) + 1) }
+          } else {
+            if dz > 0 { (dx * 420) / (abs_val(dz) + 1) } else { 2048 - (dx * 420) / (abs_val(dz) + 1) }
+          };
+          mem_store(ea + 9, approx_yaw & 4095);
+
+          let ek = mem_load(ea + 3);
+          let mspd = if ek == 2 { 64 } else { if ek == 3 { 54 } else { 44 } };
+          if dist > 1650 && dist > 0 {
+            let sx = (dx * mspd) / dist;
+            let sz = (dz * mspd) / dist;
+            if !hits_wall_3d(ex + sx, ey, ez + sz, 450) {
+              let nfy = find_floor_below(ex + sx, ey, ez + sz);
+              if abs_val(nfy - ey) <= 420 {
+                mem_store(ea, ex + sx);
+                mem_store(ea + 1, nfy);
+                mem_store(ea + 2, ez + sz);
+              } else { () };
             } else { () };
           } else { () };
 
-          let cd = mem_load(ea + 5) - 1;
+          let cd = mem_load(ea + 6) - 1;
           if cd <= 0 {
-            if dist_approx < 6800 && has_line_of_sight(ex, ey, px, py) {
-              let r = next_rand();
-              mem_store(15, mem_load(15) | 8); // Bit 3: Enemy Shot!
-              if (r & 3) != 0 {
-                let hit_dmg = if ekind == 3 { 16 } else { if ekind == 2 { 12 } else { 8 } };
-                damage_player(hit_dmg);
+            if dist < 13500 && abs_val(foot_y - ey) < 2400 {
+              mem_store(19, mem_load(19) | 8);
+              if (next_rand() & 3) != 0 {
+                let mdmg = if ek == 3 { 16 } else { if ek == 2 { 11 } else { 7 } };
+                damage_player(mdmg);
               } else { () };
             } else { () };
-            mem_store(ea + 5, if ekind == 3 { 38 } else { 52 });
+            mem_store(ea + 6, if ek == 3 { 42 } else { 54 });
           } else {
-            mem_store(ea + 5, cd);
+            mem_store(ea + 6, cd);
           };
         } else { () };
       } else { () };
       e = e + 1;
     }
 
-    let safe_kills = clamp_stat(mem_load(7), 8);
-    let safe_hp = clamp_stat(mem_load(4), 100);
-    let win_b = if mem_load(14) == 1 { 1000 } else { 0 };
-    mem_store(8, compute_fps_score(safe_kills, safe_hp, win_b));
+    let safe_kills = clamp_stat(mem_load(11), 10);
+    let safe_hp = clamp_stat(mem_load(8), 100);
+    let win_b = if mem_load(18) == 1 { 1500 } else { 0 };
+    mem_store(12, compute_fps_score(safe_kills, safe_hp, win_b));
 
     if (tick & 3) == 0 {
-      save_combat_snapshot();
+      save_snapshot_3d();
     } else { () };
 
-    render_3d_frame()
+    build_dynamic_scene();
+    do Gpu.submit(mem_load(20), mem_load(21));
+    262144
   }
 }
 
-export fn rewind_combat(steps_back: i64) -[Mem]-> i64 {
-  let cnt = mem_load(17);
+export fn rewind_combat(steps_back: i64) -[Mem, Gpu]-> i64 {
+  let cnt = mem_load(25);
   if cnt <= 0 {
-    render_3d_frame()
+    build_dynamic_scene();
+    do Gpu.submit(mem_load(20), mem_load(21));
+    262144
   } else {
     let clamped = if steps_back < 0 { 0 } else { if steps_back >= cnt { cnt - 1 } else { steps_back } };
-    let raw = mem_load(16) - 1 - clamped;
+    let raw = mem_load(24) - 1 - clamped;
     let wrapped = if raw < 0 { raw + 120 } else { raw };
     let slot = if wrapped < 0 { 0 } else { if wrapped >= 120 { 0 } else { wrapped } };
     let base = snap_addr(slot);
 
     let mut h = 0;
-    while h < 15 max 15 {
+    while h < 20 max 20 {
       mem_store(h, mem_load(base + h));
       h = h + 1;
     }
-    mem_store(18, mem_load(base + 18));
+    mem_store(26, mem_load(base + 26));
 
     let mut e = 0;
-    while e >= 0 && e < 8 max 8 {
+    while e >= 0 && e < 10 max 10 {
       let ea = enemy_addr(e);
-      let da = base + 24 + e * 8;
+      let da = base + 32 + e * 12;
       let mut f = 0;
-      while f < 8 max 8 {
+      while f < 10 max 10 {
         mem_store(ea + f, mem_load(da + f));
         f = f + 1;
       }
@@ -715,597 +1817,86 @@ export fn rewind_combat(steps_back: i64) -[Mem]-> i64 {
     }
 
     let mut it = 0;
-    while it >= 0 && it < 8 max 8 {
+    while it >= 0 && it < 10 max 10 {
       let ia = item_addr(it);
-      mem_store(ia + 3, mem_load(base + 96 + it));
+      mem_store(ia + 4, mem_load(base + 160 + it));
       it = it + 1;
     }
 
-    render_3d_frame()
+    build_dynamic_scene();
+    do Gpu.submit(mem_load(20), mem_load(21));
+    262144
   }
 }
 
-// --- Widescreen 720x450 Quake-Palette 3D Software Engine ---
+// --- Exported GPU Buffer Offsets & Telemetry Getters ---
 
-fn shade_texel(texel: i64, light: i64, muz_glow: i64) -> i64 {
-  let r = (((texel & 255) * light) >> 8) + muz_glow;
-  let g = ((((texel >> 8) & 255) * light) >> 8) + (muz_glow * 2) / 3;
-  let b = ((((texel >> 16) & 255) * light) >> 8) + muz_glow / 4;
-  pack_rgba(r, g, b)
-}
-
-fn draw_billboard_sprite(
-  px: i64,
-  py: i64,
-  dir_x: i64,
-  dir_y: i64,
-  plane_x: i64,
-  plane_y: i64,
-  horizon: i64,
-  sx_w: i64,
-  sy_w: i64,
-  kind: i64,
-  state: i64,
-  hit_flash: i64,
-  anim: i64
-) -[Mem]-> unit {
-  let rel_x = sx_w - px;
-  let rel_y = sy_w - py;
-
-  // Inverse camera matrix (`det = plane_x * dir_y - dir_x * plane_y ≈ 720 * 1024`)
-  let tz = (rel_x * dir_x + rel_y * dir_y) / 1024;
-  if tz > 180 && tz < 14000 {
-    let tx_cam = (-rel_x * dir_y + rel_y * dir_x) / 1024;
-    let scr_x = 360 + (tx_cam * 500) / tz;
-    let spr_h = (420 * 1024) / tz;
-    let spr_w = if kind >= 10 { spr_h / 2 } else { (spr_h * 3) / 4 };
-
-    let y_bot = horizon + spr_h / 2;
-    let y_top = if state == 2 { y_bot - spr_h / 4 } else { y_bot - spr_h };
-    let x_left = scr_x - spr_w / 2;
-    let x_right = scr_x + spr_w / 2;
-
-    let light = clamp_stat(250 - tz / 48, 255);
-    let cl_x0 = if x_left < 0 { 0 } else { x_left };
-    let cl_x1 = if x_right > 719 { 719 } else { x_right };
-    let cl_y0 = if y_top < 0 { 0 } else { y_top };
-    let cl_y1 = if y_bot > 396 { 396 } else { y_bot };
-
-    if spr_w > 2 && spr_h > 2 && cl_x0 <= cl_x1 && cl_y0 <= cl_y1 {
-      let mut sx = cl_x0;
-      while sx <= cl_x1 max 720 {
-        if tz < mem_load(3200 + sx) {
-          let u = ((sx - x_left) * 64) / spr_w; // 0..63
-          let du = abs_val(u - 32);
-
-          let mut sy = cl_y0;
-          while sy <= cl_y1 max 400 {
-            let v = ((sy - y_top) * 64) / (if y_bot - y_top > 0 { y_bot - y_top } else { 1 });
-            if kind >= 10 {
-              // 3D Pickup Crate / Medkit / Bronze Armor Shield!
-              let ik = kind - 10;
-              let dv = abs_val(v - 42);
-              if du < 18 && v >= 24 && v <= 60 {
-                let shade_3d = (light * (240 - du * 4)) >> 8;
-                let cross = (du < 4 && dv < 10) || (du < 10 && dv < 4);
-                let pr = if ik == 1 { if cross { 235 } else { 220 } } else { if ik == 2 { 172 } else { 218 } };
-                let pg = if ik == 1 { if cross { 42 } else { 222 } } else { if ik == 2 { 134 } else { 156 } };
-                let pb = if ik == 1 { if cross { 42 } else { 216 } } else { if ik == 2 { 56 } else { 52 } };
-                mem_store(65536 + sy * 720 + sx, shade_texel(pack_rgba(pr, pg, pb), shade_3d, 0));
-              } else { () };
-            } else {
-              if state == 2 {
-                // Fallen Monster Corpse Mound
-                if du * du + (v - 40) * (v - 40) < 620 {
-                  mem_store(65536 + sy * 720 + sx, shade_texel(pack_rgba(116, 38, 32), light, 0));
-                } else { () };
-              } else {
-                // Sculpted 3D Cylindrical Shaded Monster Silhouette (Grunt / Horned Fiend / Dread Warden)!
-                let stride = ((anim >> 2) & 3) - 1;
-                let in_head = v >= 4 && v < 18 && du < 9;
-                let horns = kind >= 2 && v >= 1 && v < 10 && du >= 8 && du <= 14;
-                let in_torso = v >= 18 && v < 42 && du < (if kind == 3 { 20 } else { 16 });
-                let in_arms = v >= 20 && v < 38 && du >= 14 && du < 24;
-                let in_legs = v >= 42 && v <= 62 && ((u >= 16 + stride && u <= 27 + stride) || (u >= 37 - stride && u <= 48 - stride));
-
-                if in_head || horns || in_torso || in_arms || in_legs {
-                  let cyl = 250 - du * 5;
-                  let m_light = (light * cyl) >> 8;
-                  let visor = in_head && v >= 9 && v <= 12 && du < 6;
-                  let gun_flash = (mem_load(0) & 7) == 0 && in_arms && v >= 28 && v <= 34;
-
-                  let mut mr = if kind == 1 { 112 } else { if kind == 2 { 148 } else { 168 } };
-                  let mut mg = if kind == 1 { 104 } else { if kind == 2 { 78 } else { 52 } };
-                  let mut mb = if kind == 1 { 86 } else { if kind == 2 { 54 } else { 68 } };
-
-                  if horns { mr = 212; mg = 188; mb = 142; } else { () };
-                  if visor {
-                    mr = 255;
-                    mg = if kind == 3 { 70 } else { 165 };
-                    mb = if kind == 3 { 220 } else { 32 };
-                  } else { () };
-                  if gun_flash { mr = 255; mg = 210; mb = 80; } else { () };
-
-                  let fl = hit_flash * 24;
-                  let lit = if visor || gun_flash { 255 } else { m_light };
-                  mem_store(65536 + sy * 720 + sx, shade_texel(pack_rgba(mr, mg, mb), lit, fl));
-                } else { () };
-              };
-            };
-            sy = sy + 1;
-          }
-        } else { () };
-        sx = sx + 1;
-      }
-    } else { () };
-  } else { () }
-}
-
-fn draw_double_shotgun_viewmodel(recoil: i64, muzzle: i64, bob_x: i64, bob_y: i64) -[Mem]-> unit {
-  let kick_y = recoil * 3 + bob_y;
-  let cx = 360 + bob_x;
-
-  // 1. Fiery Multi-Spike Muzzle Blast when firing!
-  if muzzle > 2 {
-    let rad = muzzle * 9;
-    let mut my = -rad;
-    while my <= rad max 130 {
-      let py = 278 + kick_y + my;
-      if py >= 120 && py < 396 {
-        let mut mx = -rad;
-        while mx <= rad max 130 {
-          let px = cx + mx;
-          if px >= 160 && px < 560 {
-            let d2 = mx * mx + my * my;
-            let spike = ((mx * 7 ^ my * 13) & 15) * 24;
-            if d2 < rad * rad - spike {
-              let core = d2 < (rad * rad) / 4;
-              let fr = 255;
-              let fg = if core { 248 } else { 168 };
-              let fb = if core { 165 } else { 38 };
-              mem_store(65536 + py * 720 + px, pack_rgba(fr, fg, fb));
-            } else { () };
-          } else { () };
-          mx = mx + 1;
-        }
-      } else { () };
-      my = my + 1;
-    }
-  } else { () };
-
-  // 2. Iconic Center-Aligned Twin Cylindrical Steel Barrels + Walnut Stock (`y: 288..396`)
-  let mut y = 286 + kick_y;
-  while y < 396 max 120 {
-    if y >= 200 && y < 396 {
-      let t = y - (286 + kick_y); // 0 at muzzle -> 110 at stock
-      let half_w = 18 + (t * 28) / 110;
-      let barrel_sep = 8 + (t * 10) / 110;
-      let brl_rad = 8 + (t * 6) / 110;
-
-      let mut dx = -half_w;
-      while dx <= half_w max 110 {
-        let px = cx + dx;
-        if px >= 0 && px < 720 {
-          if t > 74 {
-            // Carved Walnut Fore-end & Receiver with Brass Shells during pump!
-            let wood_sh = 180 - abs_val(dx) * 3;
-            let wr = (138 * wood_sh) >> 8;
-            let wg = (78 * wood_sh) >> 8;
-            let wb = (42 * wood_sh) >> 8;
-            mem_store(65536 + y * 720 + px, pack_rgba(wr, wg, wb));
-          } else {
-            // Left & Right 3D Cylindrical Blued-Steel Shotgun Barrels with Specular Ridge!
-            let d_left = abs_val(dx + barrel_sep);
-            let d_right = abs_val(dx - barrel_sep);
-            let min_d = if d_left < d_right { d_left } else { d_right };
-            if min_d <= brl_rad {
-              let bore = t < 5 && min_d < brl_rad - 3;
-              if bore {
-                mem_store(65536 + y * 720 + px, pack_rgba(18, 16, 16));
-              } else {
-                let spec = 220 - min_d * 14 + (if dx < 0 { 24 } else { -12 });
-                let sr = ((94 * spec) >> 8) + muzzle * 8;
-                let sg = ((98 * spec) >> 8) + muzzle * 5;
-                let sb = ((108 * spec) >> 8) + muzzle * 2;
-                mem_store(65536 + y * 720 + px, pack_rgba(sr, sg, sb));
-              };
-            } else {
-              // Center ventilated rib between twin barrels
-              if abs_val(dx) <= 3 {
-                mem_store(65536 + y * 720 + px, pack_rgba(52, 54, 60));
-              } else { () };
-            };
-          };
-        } else { () };
-        dx = dx + 1;
-      }
-    } else { () };
-    y = y + 1;
-  }
-}
-
-export fn render_3d_frame() -[Mem]-> i64 {
-  let tick = mem_load(0);
-  let px = mem_load(1);
-  let py = mem_load(2);
-  let pang = mem_load(3);
-  let hp = mem_load(4);
-  let arm = mem_load(5);
-  let ammo = mem_load(6);
-  let muzzle = mem_load(9);
-  let recoil = mem_load(10);
-  let hurt = mem_load(11);
-  let pickup = mem_load(12);
-  let bob_t = mem_load(13);
-
-  let dir_x = fast_cos(pang);
-  let dir_y = fast_sin(pang);
-  // 75-degree widescreen FOV camera plane (`plane = 0.72 * perp(dir)`)
-  let plane_x = (-dir_y * 720) / 1024;
-  let plane_y = (dir_x * 720) / 1024;
-
-  let bob_sin = fast_sin(bob_t * 16);
-  let horizon = 198 + (bob_sin * 5) / 1024;
-  let gun_bob_x = (fast_cos(bob_t * 8) * 8) / 1024;
-  let gun_bob_y = abs_val((bob_sin * 6) / 1024);
-
-  let ptx = clamp_stat(px >> 10, 23);
-  let pty = clamp_stat(py >> 10, 23);
-  let in_open_sky = mem_load(704 + map_idx(ptx, pty)) == 2;
-
-  // 1. Constant-Z Perspective Textured Floor & Ceiling Scanlines (`y: 0..396`)
-  let rdx0 = dir_x - plane_x;
-  let rdy0 = dir_y - plane_y;
-  let rdx1 = dir_x + plane_x;
-  let rdy1 = dir_y + plane_y;
-
-  let mut y = 0;
-  while y < 396 max 396 {
-    let row_off = 65536 + y * 720;
-    let is_floor = y >= horizon;
-    let p_dy = if is_floor { y - horizon + 1 } else { horizon - y + 1 };
-    let raw_rd = (198 * 1024) / p_dy;
-    let row_dist = if raw_rd < 1 { 1 } else { raw_rd };
-
-    let base_l = clamp_stat(242 - row_dist / 36, 255);
-    let muz_l = if muzzle > 0 { (muzzle * 24 * 1024) / (row_dist + 512) } else { 0 };
-
-    if !is_floor && in_open_sky {
-      // Scrolling Dark Quake-1 Purple/Indigo Tempest Sky!
-      let mut sx = 0;
-      while sx < 720 max 720 {
-        let su = ((sx + pang * 2 + tick) >> 2) & 63;
-        let sv = ((y + (tick >> 1)) >> 1) & 63;
-        let cloud = mem_load(tex_addr(7, su, sv));
-        mem_store(row_off + sx, shade_texel(cloud, 215, muz_l / 2));
-        sx = sx + 1;
-      }
-    } else {
-      let mut fx = px * 64 + ((row_dist * rdx0) / 16);
-      let mut fy = py * 64 + ((row_dist * rdy0) / 16);
-      let step_x = (row_dist * (rdx1 - rdx0)) / (720 * 16);
-      let step_y = (row_dist * (rdy1 - rdy0)) / (720 * 16);
-
-      let mut sx = 0;
-      while sx < 720 max 720 {
-        let cell_x = fx >> 16;
-        let cell_y = fy >> 16;
-        let u = (fx >> 10) & 63;
-        let v = (fy >> 10) & 63;
-
-        let mut tid = if is_floor { 5 } else { 7 };
-        let mut l_val = base_l;
-        if is_floor && cell_x >= 0 && cell_x < 24 && cell_y >= 0 && cell_y < 24 {
-          if mem_load(704 + map_idx(cell_x, cell_y)) == 1 {
-            tid = 6; // Swirling glowing green acid slime!
-            let su = (u + (tick >> 1)) & 63;
-            let sv = (v + (tick >> 2)) & 63;
-            let slime_px = mem_load(tex_addr(6, su, sv));
-            mem_store(row_off + sx, shade_texel(slime_px, 235, muz_l));
-            tid = -1;
-          } else { () };
-        } else { () };
-
-        if tid >= 0 && tid < 8 {
-          let tpx = mem_load(tex_addr(tid, u, v));
-          mem_store(row_off + sx, shade_texel(tpx, l_val, muz_l));
-        } else { () };
-
-        fx = fx + step_x;
-        fy = fy + step_y;
-        sx = sx + 1;
-      }
-    };
-    y = y + 1;
-  }
-
-  // 2. 720-Column Textured DDA Wall Raycaster + Dynamic Torch & Muzzle Lighting!
-  let mut x = 0;
-  while x < 720 max 720 {
-    let rdx = dir_x + ((plane_x * (x - 360)) / 360);
-    let rdy = dir_y + ((plane_y * (x - 360)) / 360);
-
-    let mut map_x = px >> 10;
-    let mut map_y = py >> 10;
-
-    let arx = abs_val(rdx);
-    let ary = abs_val(rdy);
-    let abs_rdx = if arx <= 0 { 1 } else { arx };
-    let abs_rdy = if ary <= 0 { 1 } else { ary };
-    let ddx = 1048576 / abs_rdx;
-    let ddy = 1048576 / abs_rdy;
-
-    let step_mx = if rdx < 0 { -1 } else { 1 };
-    let step_my = if rdy < 0 { -1 } else { 1 };
-
-    let mut side_dx = if rdx < 0 { ((px & 1023) * ddx) >> 10 } else { ((1024 - (px & 1023)) * ddx) >> 10 };
-    let mut side_dy = if rdy < 0 { ((py & 1023) * ddy) >> 10 } else { ((1024 - (py & 1023)) * ddy) >> 10 };
-
-    let mut hit = 0;
-    let mut side = 0;
-    let mut steps = 0;
-    while hit == 0 && steps < 38 max 38 {
-      if side_dx < side_dy {
-        side_dx = side_dx + ddx;
-        map_x = map_x + step_mx;
-        side = 0;
-      } else {
-        side_dy = side_dy + ddy;
-        map_y = map_y + step_my;
-        side = 1;
-      };
-      if map_x < 0 || map_x >= 24 || map_y < 0 || map_y >= 24 {
-        hit = 2;
-      } else {
-        hit = mem_load(128 + map_idx(map_x, map_y));
-      };
-      steps = steps + 1;
-    }
-
-    let raw_perp = if side == 0 { side_dx - ddx } else { side_dy - ddy };
-    let perp = if raw_perp < 64 { 64 } else { raw_perp };
-    mem_store(3200 + x, perp);
-
-    let line_h = (396 * 1024) / perp;
-    let y0 = horizon - line_h / 2;
-    let y1 = horizon + line_h / 2;
-    let cy0 = if y0 < 0 { 0 } else { y0 };
-    let cy1 = if y1 > 395 { 395 } else { y1 };
-
-    let wall_hit = if side == 0 { py + (perp * rdy) / 1024 } else { px + (perp * rdx) / 1024 };
-    let mut tex_u = (wall_hit >> 4) & 63;
-    if hit == 5 {
-      // Animate swirling Runic Exit Slipgate!
-      tex_u = (tex_u + (tick >> 1)) & 63;
-    } else { () };
-
-    let tid = if hit >= 1 && hit <= 5 { hit - 1 } else { 0 };
-    let side_mul = if side == 1 { 196 } else { 256 };
-    let mut col_light = ((clamp_stat(252 - perp / 40, 255) * side_mul) >> 8);
-    if hit == 4 {
-      // Flickering Torch Brazier self-illumination!
-      col_light = clamp_stat(col_light + 95 + (((tick >> 1) * 13) & 31), 255);
-    } else {
-      if hit == 5 {
-        col_light = 250; // Glowing Runic Exit Slipgate!
-      } else { () };
-    };
-    let muz_wall = if muzzle > 0 { (muzzle * 28 * 1024) / (perp + 400) } else { 0 };
-
-    if line_h > 0 {
-      let mut wy = cy0;
-      while wy <= cy1 max 396 {
-        let tex_v = (((wy - y0) * 64) / line_h) & 63;
-        let tcol = mem_load(tex_addr(tid, tex_u, tex_v));
-        mem_store(65536 + wy * 720 + x, shade_texel(tcol, col_light, muz_wall));
-        wy = wy + 1;
-      }
-    } else { () };
-
-    x = x + 1;
-  }
-
-  // 3. Render Pickups (Medkits, Shells, Bronze Armor)
-  let mut it = 0;
-  while it >= 0 && it < 8 max 8 {
-    let ia = item_addr(it);
-    if mem_load(ia + 3) == 1 {
-      draw_billboard_sprite(
-        px, py, dir_x, dir_y, plane_x, plane_y, horizon,
-        mem_load(ia), mem_load(ia + 1), 10 + mem_load(ia + 2), 0, 0, 0
-      );
-    } else { () };
-    it = it + 1;
-  }
-
-  // 4. Depth-Sort & Render all 8 3D Shaded Monsters (far-to-near painter + Z-buffer clip!)
-  let mut ei = 0;
-  while ei >= 0 && ei < 8 max 8 {
-    let ea = enemy_addr(ei);
-    let dx = mem_load(ea) - px;
-    let dy = mem_load(ea + 1) - py;
-    mem_store(3920 + ei, ei);
-    mem_store(3928 + ei, abs_val(dx) + abs_val(dy));
-    ei = ei + 1;
-  }
-
-  let mut sp = 0;
-  while sp < 8 max 8 {
-    let mut sq = 0;
-    while sq < 7 max 7 {
-      let d0 = mem_load(3928 + sq);
-      let d1 = mem_load(3928 + sq + 1);
-      if d0 < d1 {
-        let id0 = mem_load(3920 + sq);
-        let id1 = mem_load(3920 + sq + 1);
-        mem_store(3928 + sq, d1);
-        mem_store(3928 + sq + 1, d0);
-        mem_store(3920 + sq, id1);
-        mem_store(3920 + sq + 1, id0);
-      } else { () };
-      sq = sq + 1;
-    }
-    sp = sp + 1;
-  }
-
-  let mut di = 0;
-  while di < 8 max 8 {
-    let eid = mem_load(3920 + di);
-    if eid >= 0 && eid < 8 {
-      let ea = enemy_addr(eid);
-      draw_billboard_sprite(
-        px, py, dir_x, dir_y, plane_x, plane_y, horizon,
-        mem_load(ea), mem_load(ea + 1), mem_load(ea + 2),
-        mem_load(ea + 4), mem_load(ea + 6), mem_load(ea + 7)
-      );
-    } else { () };
-    di = di + 1;
-  }
-
-  // 5. Center Crosshair + Iconic Quake-Style Twin-Barrel Shotgun Viewmodel!
-  let ch_col = pack_rgba(245, 204, 68);
-  mem_store(65536 + horizon * 720 + 356, ch_col);
-  mem_store(65536 + horizon * 720 + 357, ch_col);
-  mem_store(65536 + horizon * 720 + 363, ch_col);
-  mem_store(65536 + horizon * 720 + 364, ch_col);
-  mem_store(65536 + (horizon - 4) * 720 + 360, ch_col);
-  mem_store(65536 + (horizon + 4) * 720 + 360, ch_col);
-
-  draw_double_shotgun_viewmodel(recoil, muzzle, gun_bob_x, gun_bob_y);
-
-  // 6. Industrial Riveted Bronze Status Bar (`y: 396..450`) + Automap Minimap in Corner!
-  let mut by = 396;
-  while by < 450 max 56 {
-    let brow = 65536 + by * 720;
-    let mut bx = 0;
-    while bx < 720 max 720 {
-      let bevel = if by == 396 { 96 } else { if by == 397 { 78 } else { 44 - (by - 396) / 3 } };
-      let mut hr = bevel + 8;
-      let mut hg = bevel;
-      let mut hb = bevel - 6;
-
-      // Health Gauge (`x: 36..216, y: 414..434`)
-      if by >= 414 && by <= 434 && bx >= 36 && bx < 216 {
-        let h_fill = (bx - 36) < (hp * 180) / 100;
-        hr = if h_fill { if hp <= 25 { 235 } else { 198 } } else { 24 };
-        hg = if h_fill { if hp <= 25 { 42 } else { 52 } } else { 20 };
-        hb = if h_fill { 42 } else { 22 };
-      } else { () };
-
-      // Bronze Armor Gauge (`x: 268..448, y: 414..434`)
-      if by >= 414 && by <= 434 && bx >= 268 && bx < 448 {
-        let a_fill = (bx - 268) < (arm * 180) / 100;
-        hr = if a_fill { 218 } else { 24 };
-        hg = if a_fill { 158 } else { 20 };
-        hb = if a_fill { 48 } else { 22 };
-      } else { () };
-
-      // Buckshot Shells Gauge (`x: 500..680, y: 414..434`)
-      if by >= 414 && by <= 434 && bx >= 500 && bx < 680 {
-        let s_fill = (bx - 500) < (ammo * 180) / 40;
-        hr = if s_fill { 232 } else { 24 };
-        hg = if s_fill { 196 } else { 20 };
-        hb = if s_fill { 76 } else { 22 };
-      } else { () };
-
-      mem_store(brow + bx, (255 << 24) | (hb << 16) | (hg << 8) | hr);
-      bx = bx + 1;
-    }
-    by = by + 1;
-  }
-
-  // Top-left Tactical Radar Minimap (`24x24` * 3px = `72x72` at `(12, 12)`)
-  let mut my_m = 0;
-  while my_m >= 0 && my_m < 24 max 24 {
-    let mut mx_m = 0;
-    while mx_m >= 0 && mx_m < 24 max 24 {
-      let wt = mem_load(128 + map_idx(mx_m, my_m));
-      let ft = mem_load(704 + map_idx(mx_m, my_m));
-      let mcol = if mx_m == ptx && my_m == pty {
-        pack_rgba(255, 240, 80)
-      } else {
-        if wt == 5 {
-          pack_rgba(210, 90, 255)
-        } else {
-          if wt > 0 {
-            pack_rgba(92, 82, 72)
-          } else {
-            if ft == 1 { pack_rgba(46, 156, 52) } else { pack_rgba(24, 28, 34) }
-          }
-        }
-      };
-      let sx0 = 12 + mx_m * 3;
-      let sy0 = 12 + my_m * 3;
-      mem_store(65536 + sy0 * 720 + sx0, mcol);
-      mem_store(65536 + sy0 * 720 + sx0 + 1, mcol);
-      mem_store(65536 + (sy0 + 1) * 720 + sx0, mcol);
-      mem_store(65536 + (sy0 + 1) * 720 + sx0 + 1, mcol);
-      mx_m = mx_m + 1;
-    }
-    my_m = my_m + 1;
-  }
-
-  // Screen Hurt / Pickup Flash Border Vignette
-  if hurt > 0 || pickup > 0 {
-    let vr = if hurt > 0 { 220 } else { 240 };
-    let vg = if hurt > 0 { 28 } else { 198 };
-    let vb = if hurt > 0 { 28 } else { 64 };
-    let vcol = pack_rgba(vr, vg, vb);
-    let mut vx_i = 0;
-    while vx_i < 720 max 720 {
-      mem_store(65536 + vx_i, vcol);
-      mem_store(65536 + 720 + vx_i, vcol);
-      mem_store(65536 + 394 * 720 + vx_i, vcol);
-      mem_store(65536 + 395 * 720 + vx_i, vcol);
-      vx_i = vx_i + 1;
-    }
-  } else { () };
-
-  262144
-}
-
-// --- Exported Telemetry & Sound Event Bitmask Getters ---
-
-export fn get_fb_byte_offset() -> i64
+export fn get_tex_byte_offset() -> i64
   ens result == 262144
 {
   262144
 }
 
+export fn get_static_vbo_byte_offset() -> i64
+  ens result == 2400000
+{
+  2400000
+}
+
+export fn get_dyn_vbo_byte_offset() -> i64
+  ens result == 5600000
+{
+  5600000
+}
+
+export fn get_gun_vbo_byte_offset() -> i64
+  ens result == 7400000
+{
+  7400000
+}
+
+export fn get_lights_byte_offset() -> i64
+  ens result == 32000
+{
+  32000
+}
+
+export fn get_static_vert_count() -[Mem]-> i64 { mem_load(20) }
+export fn get_dyn_vert_count() -[Mem]-> i64 { mem_load(21) }
+export fn get_gun_vert_count() -[Mem]-> i64 { mem_load(22) }
+export fn get_light_count() -[Mem]-> i64 { mem_load(23) }
+
 export fn pop_sfx() -[Mem]-> i64 {
-  let m = mem_load(15);
-  mem_store(15, 0);
+  let m = mem_load(19);
+  mem_store(19, 0);
   m
 }
 
-export fn get_health() -[Mem]-> i64 {
-  mem_load(4)
-}
+export fn get_cam_x() -[Mem]-> i64 { mem_load(1) }
+export fn get_cam_y() -[Mem]-> i64 { mem_load(2) }
+export fn get_cam_z() -[Mem]-> i64 { mem_load(3) }
+export fn get_cam_yaw() -[Mem]-> i64 { mem_load(4) }
+export fn get_cam_pitch() -[Mem]-> i64 { mem_load(5) }
+export fn get_muzzle() -[Mem]-> i64 { mem_load(13) }
+export fn get_hurt() -[Mem]-> i64 { mem_load(15) }
+export fn get_pickup() -[Mem]-> i64 { mem_load(16) }
 
-export fn get_armor() -[Mem]-> i64 {
-  mem_load(5)
-}
+export fn get_health() -[Mem]-> i64 { mem_load(8) }
+export fn get_armor() -[Mem]-> i64 { mem_load(9) }
+export fn get_ammo() -[Mem]-> i64 { mem_load(10) }
+export fn get_kills() -[Mem]-> i64 { mem_load(11) }
+export fn get_score() -[Mem]-> i64 { mem_load(12) }
+export fn get_state() -[Mem]-> i64 { mem_load(18) }
+export fn get_tick() -[Mem]-> i64 { mem_load(0) }
+export fn get_snap_count() -[Mem]-> i64 { mem_load(25) }
 
-export fn get_ammo() -[Mem]-> i64 {
-  mem_load(6)
-}
-
-export fn get_kills() -[Mem]-> i64 {
-  mem_load(7)
-}
-
-export fn get_score() -[Mem]-> i64 {
-  mem_load(8)
-}
-
-export fn get_state() -[Mem]-> i64 {
-  mem_load(14)
-}
-
-export fn get_tick() -[Mem]-> i64 {
-  mem_load(0)
-}
-
-export fn get_snap_count() -[Mem]-> i64 {
-  mem_load(17)
+export fn set_camera_pose(x: i64, y: i64, z: i64, yaw: i64, pitch: i64) -[Mem, Gpu]-> unit {
+  mem_store(1, x);
+  mem_store(2, y);
+  mem_store(3, z);
+  mem_store(4, yaw & 4095);
+  mem_store(5, clamp_pitch(pitch));
+  mem_store(6, y - 1680);
+  build_dynamic_scene();
+  do Gpu.submit(mem_load(20), mem_load(21));
 }

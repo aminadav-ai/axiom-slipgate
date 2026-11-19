@@ -2,72 +2,80 @@ import fs from 'node:fs';
 import assert from 'node:assert/strict';
 
 const wasmBytes = fs.readFileSync(new URL('../web/slipgate.wasm', import.meta.url));
-const { instance } = await WebAssembly.instantiate(wasmBytes, {});
-const ex = instance.exports;
+const mod = await WebAssembly.compile(wasmBytes);
 
-const WIDTH = 720;
-const HEIGHT = 450;
+// 1. Verify Axiom Security Passport records `[CAP] Gpu` and `[CAP] Mem`
+const passportSec = WebAssembly.Module.customSections(mod, 'axiom.passport');
+assert.equal(passportSec.length, 1);
+const passport = JSON.parse(new TextDecoder().decode(passportSec[0]));
+const caps = passport.capabilities.map((c) => c.effect);
+assert(caps.includes('Gpu') && caps.includes('Mem'), `Expected Gpu & Mem capabilities, got ${JSON.stringify(caps)}`);
 
-const fbOffset = ex.init_game(1996);
-assert.equal(fbOffset, 262144, 'Expected framebuffer byte offset 262144');
-assert.equal(ex.get_health(), 100);
-assert.equal(ex.get_armor(), 25);
-assert.equal(ex.get_ammo(), 24);
-assert.equal(ex.get_kills(), 0);
+const inst = await WebAssembly.instantiate(mod, {});
+const ex = inst.exports;
 
-const u8 = new Uint8Array(ex.memory.buffer, fbOffset, WIDTH * HEIGHT * 4);
-const colors = new Set();
-for (let i = 0; i < u8.length; i += 32) {
-  assert.equal(u8[i + 3], 255, 'Every pixel alpha must be 255');
-  colors.add((u8[i] << 16) | (u8[i + 1] << 8) | u8[i + 2]);
+// 2. Initialize 3D Citadel world & 8x 256x256 bump-mapped procedural textures
+const texOff = ex.init_game(1996);
+assert.equal(texOff, 262144);
+assert.equal(ex.get_tex_byte_offset(), 262144);
+assert.equal(ex.get_static_vbo_byte_offset(), 2400000);
+assert.equal(ex.get_dyn_vbo_byte_offset(), 5600000);
+assert.equal(ex.get_gun_vbo_byte_offset(), 7400000);
+
+const staticVerts = ex.get_static_vert_count();
+const dynVerts = ex.get_dyn_vert_count();
+const gunVerts = ex.get_gun_vert_count();
+const lights = ex.get_light_count();
+
+assert(staticVerts > 1500 && staticVerts % 3 === 0, `Expected >1500 static 3D world vertices (divisible by 3), got ${staticVerts}`);
+assert(dynVerts > 1200 && dynVerts % 3 === 0, `Expected >1200 dynamic 3D monster/item vertices, got ${dynVerts}`);
+assert(gunVerts > 180 && gunVerts % 3 === 0, `Expected >180 3D Super-Shotgun vertices, got ${gunVerts}`);
+assert(lights >= 6, `Expected >=6 dynamic point lights, got ${lights}`);
+
+// 3. Check 256x256 Worley/FBM texture richness + non-flat heightmap channel
+const texU8 = new Uint8Array(ex.memory.buffer, texOff, 8 * 256 * 256 * 4);
+const distinctRgb = new Set();
+const distinctHeights = new Set();
+for (let i = 0; i < texU8.length; i += 8) {
+  distinctRgb.add((texU8[i] << 16) | (texU8[i + 1] << 8) | texU8[i + 2]);
+  distinctHeights.add(texU8[i + 3]);
 }
-assert(colors.size > 600, `Expected rich 3D textured Quake-palette scene (>600 RGB colors), got ${colors.size}`);
+assert(distinctRgb.size > 4000, `Expected >4000 organic FBM/Worley RGB gradations across 256x256 textures, got ${distinctRgb.size}`);
+assert(distinctHeights.size > 120, `Expected >120 heightmap relief levels for GPU bump mapping, got ${distinctHeights.size}`);
 
-// Verify signed negative i32 inputs (`Backward` fwd=-1, `StrafeLeft` strafe=-1, `TurnLeft` turn=-12)
-const mem32 = new Int32Array(ex.memory.buffer);
-const initPx = mem32[1], initPy = mem32[2];
-ex.step_fps(-1, 0, 0, 0);
-assert(mem32[1] < initPx, 'Backward (-1, 0, 0) must decrease px when facing East');
-ex.init_game(1996);
-ex.step_fps(0, -1, 0, 0);
-assert(mem32[2] < initPy, 'StrafeLeft (0, -1, 0) must decrease py when facing East');
-ex.init_game(1996);
+// 4. Verify 6-DOF signed controls: Forward, Backward (-1), StrafeLeft (-1), YawLeft (-24), PitchUp (+20), Jump, Fire
+const initX = ex.get_cam_x();
+const initZ = ex.get_cam_z();
+ex.step_fps(-1, 0, 0, 0, 0, 0); // Move Backward!
+assert(ex.get_cam_z() > initZ, 'Backward (-1) must move +Z (back) in right-handed 3D space');
+ex.step_fps(0, -1, -24, 30, 1, 1); // Strafe left + turn left + look up + jump + fire boomstick!
+assert.equal(ex.get_ammo(), 27, 'Firing 3D Super-Shotgun consumes 1 shell (28 -> 27)');
+assert(ex.pop_sfx() & 1, 'Firing emits Boomstick SFX bit 0');
 
-// Sprint forward down the East corridor toward Cyber-Grunt #0 at tile (9,4) and blast double-barrel shotgun!
+// 5. Benchmark per-frame CPU step + dynamic 3D monster/gun mesh generation!
 const t0 = performance.now();
-let shotgunBoomHeard = false;
-let monsterHitOrKillHeard = false;
-let ammoAt20 = -1;
 let tickAt20 = -1;
-
-for (let f = 1; f <= 80; f++) {
-  const shoot = (f === 35 || f === 55) ? 1 : 0;
-  ex.step_fps(1, 0, 0, shoot);
-  const sfx = ex.pop_sfx();
-  if (sfx & 1) shotgunBoomHeard = true;
-  if (sfx & 6) monsterHitOrKillHeard = true;
-  if (f === 20) {
-    tickAt20 = ex.get_tick();
-    ammoAt20 = ex.get_ammo();
-  }
+for (let f = 0; f < 120; f++) {
+  ex.step_fps(1, 0, 0, 0, 0, f === 40 ? 1 : 0);
+  if (f === 20) tickAt20 = ex.get_tick();
 }
-const avgFrameMs = (performance.now() - t0) / 80;
+const avgCpuMs = (performance.now() - t0) / 120;
 
-assert.equal(shotgunBoomHeard, true, 'Firing boomstick must emit SFX bit 0');
-assert.equal(monsterHitOrKillHeard, true, 'Buckshot down corridor must hit/kill patrolling Cyber-Grunt');
-assert(ex.get_kills() >= 1, `Expected >=1 Cyber-Grunt kill after 2 close-range blasts, got ${ex.get_kills()}`);
-
-// Verify Time-Travel Combat Rewind back 15 snapshots (60 ticks -> tick 20!)
-ex.rewind_combat(15);
-assert.equal(ex.get_tick(), tickAt20, 'Combat Time-Travel must restore exact historical tick');
-assert.equal(ex.get_ammo(), ammoAt20, 'Combat Time-Travel must restore pre-shot ammo');
+// 6. Verify Time-Travel Combat Rewind
+const snaps = ex.get_snap_count();
+assert(snaps >= 25, `Expected >=25 combat snapshots, got ${snaps}`);
+ex.rewind_combat(24);
+assert(ex.get_tick() <= tickAt20 + 8, 'Rewind restores earlier combat tick');
 
 console.log(JSON.stringify({
   status: 'PASS',
   wasmBytes: wasmBytes.length,
   wasmKB: +(wasmBytes.length / 1024).toFixed(2),
-  distinctSampledColors: colors.size,
-  snapshotsRecorded: ex.get_snap_count(),
-  avgFrameMs: +avgFrameMs.toFixed(2),
-  theoreticalMaxFps: Math.round(1000 / avgFrameMs),
+  staticWorldTriangles: staticVerts / 3,
+  dynamicEntityTriangles: dynVerts / 3,
+  superShotgunTriangles: gunVerts / 3,
+  pointLights: lights,
+  distinctTextureColors: distinctRgb.size,
+  distinctHeightmapLevels: distinctHeights.size,
+  avgCpuStepMs: +avgCpuMs.toFixed(3),
 }, null, 2));

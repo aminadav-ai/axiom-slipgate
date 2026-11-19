@@ -62,11 +62,11 @@ body {
 }
 
 .shell {
-  max-inline-size: 960px;
+  max-inline-size: 1120px;
   margin-inline: auto;
-  padding: 1.2rem 1rem 2.5rem;
+  padding: 1.1rem 1rem 2.2rem;
   display: grid;
-  gap: 1rem;
+  gap: 0.9rem;
 }
 
 .topbar {
@@ -198,9 +198,59 @@ h1 .sub {
   display: block;
   inline-size: 100%;
   block-size: auto;
-  aspect-ratio: 720 / 450;
+  aspect-ratio: 16 / 9;
   cursor: crosshair;
   touch-action: none;
+}
+
+.crosshair {
+  position: absolute;
+  inset-inline-start: 50%;
+  inset-block-start: 50%;
+  transform: translate(-50%, -50%);
+  color: #ffffff;
+  font-weight: 900;
+  font-size: 1.35rem;
+  line-height: 1;
+  text-shadow: 0 0 4px rgba(0, 0, 0, 0.95);
+  pointer-events: none;
+  user-select: none;
+}
+
+.quake-hud {
+  position: absolute;
+  inset-inline: 1.25rem;
+  inset-block-end: 0.9rem;
+  display: flex;
+  justify-content: space-between;
+  pointer-events: none;
+  user-select: none;
+}
+
+.q-box {
+  background: rgba(16, 12, 10, 0.68);
+  border: 1px solid rgba(240, 168, 75, 0.45);
+  border-radius: 8px;
+  padding: 0.25rem 0.75rem;
+  display: flex;
+  align-items: baseline;
+  gap: 0.45rem;
+  backdrop-filter: blur(4px);
+}
+
+.q-lbl {
+  font-size: 0.72rem;
+  font-weight: 800;
+  letter-spacing: 0.06em;
+  color: #d9a466;
+}
+
+.q-box strong {
+  font-size: 1.55rem;
+  font-weight: 900;
+  color: #ffbe5c;
+  text-shadow: 0 2px 6px rgba(0, 0, 0, 0.9);
+  font-variant-numeric: tabular-nums;
 }
 
 .overlay-banner {
