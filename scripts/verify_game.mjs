@@ -23,6 +23,16 @@ for (let i = 0; i < u8.length; i += 32) {
 }
 assert(colors.size > 600, `Expected rich 3D textured Quake-palette scene (>600 RGB colors), got ${colors.size}`);
 
+// Verify signed negative i32 inputs (`Backward` fwd=-1, `StrafeLeft` strafe=-1, `TurnLeft` turn=-12)
+const mem32 = new Int32Array(ex.memory.buffer);
+const initPx = mem32[1], initPy = mem32[2];
+ex.step_fps(-1, 0, 0, 0);
+assert(mem32[1] < initPx, 'Backward (-1, 0, 0) must decrease px when facing East');
+ex.init_game(1996);
+ex.step_fps(0, -1, 0, 0);
+assert(mem32[2] < initPy, 'StrafeLeft (0, -1, 0) must decrease py when facing East');
+ex.init_game(1996);
+
 // Sprint forward down the East corridor toward Cyber-Grunt #0 at tile (9,4) and blast double-barrel shotgun!
 const t0 = performance.now();
 let shotgunBoomHeard = false;

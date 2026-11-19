@@ -184,19 +184,35 @@ function syncSliderVars() {
   rewindSlider.style.setProperty('--control-value', String(rewindSlider.value));
 }
 
+function normalizeKeyTokens(e) {
+  const tokens = [];
+  if (e.code) tokens.push(e.code);
+  if (e.key) {
+    if (e.key.startsWith('Arrow')) tokens.push(e.key);
+    if (e.key === ' ') tokens.push('Space');
+  }
+  return tokens;
+}
+
 window.addEventListener('keydown', (e) => {
-  if (['ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight', 'Space'].includes(e.code)) {
+  const toks = normalizeKeyTokens(e);
+  if (document.activeElement !== rewindSlider && toks.some((t) => ['ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight', 'Space'].includes(t))) {
     e.preventDefault();
   }
   ensureAudio();
-  if (e.code === 'Space') {
+  if (toks.includes('Space')) {
     fireQueued = 1;
   }
-  keys.add(e.code);
-});
+  toks.forEach((t) => keys.add(t));
+}, { capture: true });
 
 window.addEventListener('keyup', (e) => {
-  keys.delete(e.code);
+  normalizeKeyTokens(e).forEach((t) => keys.delete(t));
+}, { capture: true });
+
+window.addEventListener('blur', () => {
+  keys.clear();
+  mouseDownFire = false;
 });
 
 canvas.addEventListener('mousedown', (e) => {
@@ -324,11 +340,17 @@ async function boot() {
 
   function frame(now) {
     if (!scrubbing) {
-      const fwd = (keys.has('KeyW') || keys.has('ArrowUp') ? 1 : 0)
-                - (keys.has('KeyS') || keys.has('ArrowDown') ? 1 : 0);
-      const strafe = (keys.has('KeyD') ? 1 : 0) - (keys.has('KeyA') ? 1 : 0);
-      const keyTurn = ((keys.has('ArrowRight') || keys.has('KeyE') ? 1 : 0)
-                    - (keys.has('ArrowLeft') || keys.has('KeyQ') ? 1 : 0)) * 12;
+      const pointerLocked = document.pointerLockElement === canvas;
+      const fwd = (keys.has('KeyW') || keys.has('ArrowUp') || keys.has('Numpad8') ? 1 : 0)
+                - (keys.has('KeyS') || keys.has('ArrowDown') || keys.has('Numpad2') ? 1 : 0);
+      const arrowLeft = keys.has('ArrowLeft') || keys.has('Numpad4') ? 1 : 0;
+      const arrowRight = keys.has('ArrowRight') || keys.has('Numpad6') ? 1 : 0;
+
+      // When Mouse-Look is active, ArrowLeft/ArrowRight strafe alongside A/D; otherwise they turn camera!
+      const strafe = (keys.has('KeyD') || (pointerLocked && arrowRight) ? 1 : 0)
+                   - (keys.has('KeyA') || (pointerLocked && arrowLeft) ? 1 : 0);
+      const keyTurn = (((!pointerLocked && arrowRight) || keys.has('KeyE') ? 1 : 0)
+                    - ((!pointerLocked && arrowLeft) || keys.has('KeyQ') ? 1 : 0)) * 12;
       const mouseTurn = Math.trunc(mouseTurnAccum);
       mouseTurnAccum -= mouseTurn;
 
