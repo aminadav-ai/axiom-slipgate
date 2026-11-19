@@ -1,0 +1,18 @@
+SPDX-License-Identifier: BUSL-1.1
+
+Axiom Slipgate (`axiom-slipgate`)
+Copyright (c) 2026 Yehuda Aminadav. All rights reserved.
+
+License Parameters (Business Source License 1.1):
+- Licensor: Yehuda Aminadav
+- Licensed Work: The `axiom-slipgate` 100% clean-room 3D shooter source (`.ax`), compiled WebAssembly artifact, and web host
+- Additional Use Grant:
+  1. Personal, educational, academic, and non-commercial research use is permitted
+     free of charge.
+  2. Non-production evaluation and browser gameplay are permitted free of charge.
+  3. Any commercial production use, commercial embedding, or commercial
+     redistribution requires a separate paid Commercial License from the Licensor.
+- Change Date: 2030-11-19 (4 years from release publication)
+- Change License: Apache-2.0
+
+Full canonical BUSL-1.1 terms: https://spdx.org/licenses/BUSL-1.1.html
