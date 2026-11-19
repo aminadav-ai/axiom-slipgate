@@ -661,7 +661,9 @@ fn emit_monumental_pillar(cx: i64, y0: i64, y1: i64, cz: i64, rad: i64) -[Mem]->
 
     seg = seg + 1;
   }
-  add_wall_collider(cx - rad, cz - rad, cx + rad, cz + rad, y0, y1);
+  let base_col = (rad * 9) / 8;
+  add_wall_collider(cx - base_col, cz - base_col, cx + base_col, cz + base_col, y0, base_h);
+  add_wall_collider(cx - rad, cz - rad, cx + rad, cz + rad, base_h, y1);
 }
 
 // --- Physics Collider Registration (`walkable_sectors` & `wall_colliders`) ---
@@ -683,7 +685,7 @@ fn add_walk_sector(x0: i64, z0: i64, x1: i64, z1: i64, floor_y: i64, ceil_y: i64
 
 fn add_wall_collider(x0: i64, z0: i64, x1: i64, z1: i64, y0: i64, y1: i64) -[Mem]-> unit {
   let idx = mem_load(29);
-  if idx < 68 {
+  if idx < 74 {
     let base = 5400 + idx * 8;
     mem_store(base, x0);
     mem_store(base + 1, z0);
@@ -747,8 +749,23 @@ fn build_citadel_3d_world() -[Mem]-> unit {
     4, 240, 235, 220);
   add_walk_sector(-5000, -18000, 5000, 3800, 0, 9000, 0);
 
-  // Left Mossy Stone Ledge Bench (like lower-left ledge in Screenshot 2!)
-  emit_solid_wall(-5200, 0, -9000, -3500, 750, 2500, 0, 2400, 155, 240);
+  // Left Mossy Stone Terrace Bench (`Y = 820` — jump straight up onto it with `Space`!)
+  emit_solid_wall(-5200, 0, -9000, -3500, 820, 2500, 0, 2400, 155, 240);
+  add_walk_sector(-5050, -9000, -3500, 2500, 820, 9000, 0);
+
+  // Mid-Left Canyon Stepping Terrace (`Y = 1450` — connects Left Terrace up to North-West Terrace!)
+  emit_solid_wall(-5200, 0, -13500, -3300, 1450, -9000, 0, 2400, 155, 242);
+  add_walk_sector(-5050, -13500, -3300, -9000, 1450, 9000, 0);
+
+  // South-West Carved Cliff Steps leading from Left Terrace up onto the Overhead Slatted Wooden Bridge (`Y = 3380`)!
+  emit_solid_wall(-5200, 0, 1200, -3600, 1850, 3850, 0, 2200, 155, 245);
+  add_walk_sector(-5050, 1200, -3600, 3850, 1850, 9000, 0);
+  emit_solid_wall(-5200, 820, -1800, -3900, 2720, 1200, 0, 2200, 165, 248);
+  add_walk_sector(-5050, -1800, -3900, 1200, 2720, 9000, 0);
+
+  // Right-Side Canyon Stepping Ledge (`Y = 1100` — jump up to North-East Flanking Terrace!)
+  emit_solid_wall(3600, 0, -13500, 5200, 1100, -9800, 0, 2400, 155, 240);
+  add_walk_sector(3600, -13500, 5050, -9800, 1100, 9000, 0);
 
   // Towering Sunlit Wild-Stone Canyon Walls (`Tex 0`) — Open to the Crimson Storm Sky above!
   emit_solid_wall(-5800, 0, -18000, -5100, 7200, 4200, 0, 2800, 150, 255);
@@ -795,11 +812,14 @@ fn build_citadel_3d_world() -[Mem]-> unit {
     let sy_top = (st + 1) * 300;
     emit_box_brush(0, -2800, 0, sz0, 2800, sy_top, sz1, 4, 2000, 230, 220, 210, 150, 235);
     add_walk_sector(-2800, sz0, 2800, sz1, sy_top, 9000, 0);
+    add_wall_collider(-2800, sz0, 2800, sz1, 0, sy_top);
     st = st + 1;
   }
-  // Flanking canyon terraces beside staircase (`Y = 1800`)
+  // Walkable Flanking Canyon Terraces beside staircase (`Y = 2200` — jumpable from stairs or side ledges!)
   emit_solid_wall(-5200, 0, -18000, -2800, 2200, -13500, 0, 2400, 150, 240);
+  add_walk_sector(-5050, -18000, -2800, -13500, 2200, 9000, 0);
   emit_solid_wall(2800, 0, -18000, 5200, 2200, -13500, 0, 2400, 150, 240);
+  add_walk_sector(2800, -18000, 5050, -13500, 2200, 9000, 0);
 
   // --------------------------------------------------------------------------
   // ZONE 2: GOTHIC VAULTED HALL WITH DIAGONAL TIMBER RAFTERS (Screenshot 3!)
@@ -810,6 +830,7 @@ fn build_citadel_3d_world() -[Mem]-> unit {
   emit_solid_wall(2800, 0, -18400, 8800, 8200, -17600, 1, 2600, 135, 225);
   // Arch lintel above doorway (`Y = 5200 .. 8200`)
   emit_box_brush(0, -2800, 5200, -18400, 2800, 8200, -17600, 1, 2400, 210, 200, 195, 140, 210);
+  add_wall_collider(-2800, -18400, 2800, -17600, 5200, 8200);
 
   // Terracotta Worn Flagstone Hall Floor (`Y = 1800`, `Tex 4`) + Glowing Slime Canal along East Side!
   emit_quad_3d(0,
@@ -836,10 +857,16 @@ fn build_citadel_3d_world() -[Mem]-> unit {
   emit_solid_wall(-9000, 1800, -36500, -8300, 8400, -18000, 1, 2600, 130, 215);
   emit_solid_wall(8300, 1300, -36500, 9000, 8400, -18000, 1, 2600, 130, 215);
 
-  // Left-Side Raised Wooden Gallery Balcony + Bolted Timber Support Posts (exact Screenshot 3 left gallery!)
+  // Left-Side Raised Wooden Gallery Balcony + Bolted Timber Support Posts (walkable via stepped supply crates!)
   emit_box_brush(0, -8300, 4400, -35500, -5200, 4650, -18400, 2, 2000, 220, 195, 170, 120, 215);
-  // Wooden parapet wall on gallery (`Y = 4650 .. 6000`, `Tex 2`)
-  emit_box_brush(0, -5450, 4650, -35500, -5200, 5950, -18400, 2, 1600, 215, 190, 165, 155, 225);
+  add_walk_sector(-8200, -35500, -5500, -18400, 4650, 9000, 0);
+  // Wooden parapet wall on gallery (`Y = 4650 .. 5700`, `Tex 2` — jumpable/protective cover!)
+  emit_solid_wall(-5450, 4650, -35500, -5200, 5700, -20600, 2, 1600, 155, 225);
+  // Stepped timber crates at South-West Hall corner (`Y = 2800` & `Y = 3780`) to jump up onto Left Gallery!
+  emit_solid_wall(-8200, 1800, -19800, -6800, 2800, -18450, 2, 1400, 150, 230);
+  add_walk_sector(-8200, -19800, -6800, -18450, 2800, 9000, 0);
+  emit_solid_wall(-6800, 1800, -20400, -5500, 3780, -18450, 2, 1400, 150, 235);
+  add_walk_sector(-6800, -20400, -5500, -18450, 3780, 9000, 0);
   // 4 Bolted Timber Support Columns under the left gallery
   emit_solid_wall(-5550, 1800, -21500, -5150, 4400, -21100, 2, 1200, 140, 210);
   emit_solid_wall(-5550, 1800, -26000, -5150, 4400, -25600, 2, 1200, 140, 210);
@@ -882,6 +909,7 @@ fn build_citadel_3d_world() -[Mem]-> unit {
   emit_solid_wall(-9000, 1800, -36600, -2400, 8400, -35800, 1, 2600, 130, 215);
   emit_solid_wall(2400, 1800, -36600, 9000, 8400, -35800, 1, 2600, 130, 215);
   emit_box_brush(0, -2400, 5400, -36600, 2400, 8400, -35800, 1, 2400, 210, 200, 195, 140, 210);
+  add_wall_collider(-2400, -36600, 2400, -35800, 5400, 8400);
 
   let mut ast = 0;
   while ast < 3 max 3 {
@@ -890,6 +918,7 @@ fn build_citadel_3d_world() -[Mem]-> unit {
     let ay_t = 1800 + (ast + 1) * 300;
     emit_box_brush(0, -2400, 1800, az0, 2400, ay_t, az1, 4, 1800, 235, 225, 215, 150, 235);
     add_walk_sector(-2400, az0, 2400, az1, ay_t, 9200, 0);
+    add_wall_collider(-2400, az0, 2400, az1, 1800, ay_t);
     ast = ast + 1;
   }
 
@@ -1296,7 +1325,7 @@ fn hits_wall_3d(px: i64, py: i64, pz: i64, rad: i64) -[Mem]-> bool {
   let cnt = mem_load(29);
   let mut hit = false;
   let mut i = 0;
-  while i < cnt && !hit max 70 {
+  while i < cnt && !hit max 74 {
     let b = 5400 + i * 8;
     let x0 = mem_load(b) - rad;
     let z0 = mem_load(b + 1) - rad;
@@ -1304,12 +1333,84 @@ fn hits_wall_3d(px: i64, py: i64, pz: i64, rad: i64) -[Mem]-> bool {
     let z1 = mem_load(b + 3) + rad;
     let y0 = mem_load(b + 4);
     let y1 = mem_load(b + 5);
-    if px >= x0 && px <= x1 && pz >= z0 && pz <= z1 && py + 1500 > y0 && py + 380 < y1 {
+    // Allow auto-stepping stairs `<= 420mm` and jumping/mantling onto terraces once `py + 420 >= y1`!
+    if px >= x0 && px <= x1 && pz >= z0 && pz <= z1 && py + 1500 > y0 && py + 420 < y1 {
       hit = true;
     } else { () };
     i = i + 1;
   }
   hit
+}
+
+// --- Exact 3D Slab Ray-Box Intersection for Pillar / Wall / Terrace Line-of-Sight! ---
+
+fn slab_enter_1024(p0: i64, dp: i64, b0: i64, b1: i64) -> i64 {
+  if dp > 0 {
+    ((b0 - p0) * 1024) / dp
+  } else {
+    if dp < 0 {
+      ((b1 - p0) * 1024) / dp
+    } else {
+      if p0 < b0 || p0 > b1 { 4096 } else { 0 }
+    }
+  }
+}
+
+fn slab_exit_1024(p0: i64, dp: i64, b0: i64, b1: i64) -> i64 {
+  if dp > 0 {
+    ((b1 - p0) * 1024) / dp
+  } else {
+    if dp < 0 {
+      ((b0 - p0) * 1024) / dp
+    } else {
+      if p0 < b0 || p0 > b1 { -4096 } else { 1024 }
+    }
+  }
+}
+
+// Returns closest hit fraction `t in 0..1024` along 3D segment `(x0,y0,z0) -> (x1,y1,z1)`, or `2048` if clear!
+fn ray_wall_hit_t_1024(x0: i64, y0: i64, z0: i64, x1: i64, y1: i64, z1: i64) -[Mem]-> i64 {
+  let cnt = mem_load(29);
+  let dx = x1 - x0;
+  let dy = y1 - y0;
+  let dz = z1 - z0;
+  let mut best_t = 2048;
+  let mut i = 0;
+  while i < cnt max 74 {
+    let b = 5400 + i * 8;
+    // Slight +55mm X/Z pad ensures curved pillar silhouettes block grazing shots reliably!
+    let bx0 = mem_load(b) - 55;
+    let bz0 = mem_load(b + 1) - 55;
+    let bx1 = mem_load(b + 2) + 55;
+    let bz1 = mem_load(b + 3) + 55;
+    let by0 = mem_load(b + 4);
+    let by1 = mem_load(b + 5);
+
+    let tx0 = slab_enter_1024(x0, dx, bx0, bx1);
+    let tx1 = slab_exit_1024(x0, dx, bx0, bx1);
+    let ty0 = slab_enter_1024(y0, dy, by0, by1);
+    let ty1 = slab_exit_1024(y0, dy, by0, by1);
+    let tz0 = slab_enter_1024(z0, dz, bz0, bz1);
+    let tz1 = slab_exit_1024(z0, dz, bz0, bz1);
+
+    let mxy0 = if tx0 > ty0 { tx0 } else { ty0 };
+    let t_enter_raw = if mxy0 > tz0 { mxy0 } else { tz0 };
+    let t_enter = if t_enter_raw > 16 { t_enter_raw } else { 16 };
+
+    let mxy1 = if tx1 < ty1 { tx1 } else { ty1 };
+    let t_exit_raw = if mxy1 < tz1 { mxy1 } else { tz1 };
+    let t_exit = if t_exit_raw < 1008 { t_exit_raw } else { 1008 };
+
+    if t_enter <= t_exit && t_enter < best_t {
+      best_t = t_enter;
+    } else { () };
+    i = i + 1;
+  }
+  best_t
+}
+
+fn has_line_of_sight_3d(x0: i64, y0: i64, z0: i64, x1: i64, y1: i64, z1: i64) -[Mem]-> i64 {
+  if ray_wall_hit_t_1024(x0, y0, z0, x1, y1, z1) <= 1008 { 0 } else { 1 }
 }
 
 fn find_floor_below(px: i64, py: i64, pz: i64) -[Mem]-> i64 {
@@ -1438,8 +1539,15 @@ fn fire_supershotgun_3d(cx: i64, cy: i64, cz: i64, yaw: i64, pitch: i64) -[Mem]-
     let dy = sp;
     let dz = (-fast_cos(yaw) * cp) >> 10;
 
+    // Clip player shotgun ray against solid walls, fluted pillars & terraces!
+    let far_x = cx + ((dx * 32000) >> 10);
+    let far_y = cy + ((dy * 32000) >> 10);
+    let far_z = cz + ((dz * 32000) >> 10);
+    let wall_frac = ray_wall_hit_t_1024(cx, cy, cz, far_x, far_y, far_z);
+    let wall_dist = if wall_frac <= 1008 { (wall_frac * 32000) >> 10 } else { 32000 };
+
     let mut best_e = -1;
-    let mut best_t = 32000;
+    let mut best_t = wall_dist;
 
     let mut e = 0;
     while e >= 0 && e < 10 max 10 {
@@ -1459,8 +1567,10 @@ fn fire_supershotgun_3d(cx: i64, cy: i64, cz: i64, yaw: i64, pitch: i64) -[Mem]-
           let hit_z = cz + ((dz * t_proj) >> 10);
           let spread = (if mem_load(ea + 3) == 3 { 980 } else { 640 }) + (t_proj >> 5);
           if abs_val(hit_x - ex) < spread && abs_val(hit_y - ey) < spread + 350 && abs_val(hit_z - ez) < spread {
-            best_t = t_proj;
-            best_e = e;
+            if has_line_of_sight_3d(cx, cy, cz, ex, ey, ez) == 1 {
+              best_t = t_proj;
+              best_e = e;
+            } else { () };
           } else { () };
         } else { () };
       } else { () };
@@ -1485,10 +1595,11 @@ fn fire_supershotgun_3d(cx: i64, cy: i64, cz: i64, yaw: i64, pitch: i64) -[Mem]-
         mem_store(19, mem_load(19) | 2);
       };
     } else {
-      // Wall spark ricochet burst ahead of aim ray!
-      let sp_x = cx + ((dx * 4500) >> 10);
-      let sp_y = cy + ((dy * 4500) >> 10);
-      let sp_z = cz + ((dz * 4500) >> 10);
+      // Wall spark ricochet burst at exact 3D wall/pillar impact distance!
+      let spark_d = if wall_dist < 18000 { wall_dist - 120 } else { 5200 };
+      let sp_x = cx + ((dx * spark_d) >> 10);
+      let sp_y = cy + ((dy * spark_d) >> 10);
+      let sp_z = cz + ((dz * spark_d) >> 10);
       spawn_burst_particles(sp_x, sp_y, sp_z, 0);
     };
   } else { () }
@@ -1615,29 +1726,32 @@ export fn step_fps(
     let mut foot_y = mem_load(6);
     let mut pz = mem_load(3);
 
-    if !hits_wall_3d(px + vx, foot_y, pz, 380) {
-      px = px + vx;
-    } else { () };
-    if !hits_wall_3d(px, foot_y, pz + vz, 380) {
-      pz = pz + vz;
-    } else { () };
-
-    // 3D Floor / Stair Elevation + Gravity & Jump!
-    let target_floor = find_floor_below(px, foot_y, pz);
+    // Apply Spacebar Jump (`vy = 165`, peak ~1.36m) BEFORE horizontal step so jumping up onto side terraces is effortless!
     let mut vy = mem_load(7);
     if jump_in > 0 && mem_load(27) == 1 {
-      vy = 135;
+      vy = 165;
       mem_store(27, 0);
       mem_store(19, mem_load(19) | 64);
     } else { () };
 
-    foot_y = foot_y + vy;
+    let next_y_air = foot_y + vy;
+
+    if !hits_wall_3d(px + vx, next_y_air, pz, 380) {
+      px = px + vx;
+    } else { () };
+    if !hits_wall_3d(px, next_y_air, pz + vz, 380) {
+      pz = pz + vz;
+    } else { () };
+
+    // 3D Floor / Stair / Side-Terrace Elevation + Gravity!
+    let target_floor = find_floor_below(px, next_y_air, pz);
+    foot_y = next_y_air;
     if foot_y <= target_floor {
       foot_y = target_floor;
       vy = 0;
       mem_store(27, 1);
     } else {
-      vy = vy - 11;
+      vy = vy - 10;
       mem_store(27, 0);
     };
 
@@ -1722,7 +1836,10 @@ export fn step_fps(
         let dz = pz - ez;
         let dist = abs_val(dx) + abs_val(dz);
 
-        if est == 0 && dist < 16500 && abs_val(foot_y - ey) < 2600 {
+        let has_los = has_line_of_sight_3d(ex, ey + 1150, ez, px, eye_y - 200, pz) == 1;
+
+        // Monsters only wake up when they actually SEE the player (or hear gunfire very close)!
+        if est == 0 && dist < 16500 && abs_val(foot_y - ey) < 2800 && (has_los || (fire_in > 0 && dist < 7200)) {
           mem_store(ea + 5, 1);
         } else { () };
 
@@ -1737,7 +1854,7 @@ export fn step_fps(
           mem_store(ea + 9, approx_yaw & 4095);
 
           let ek = mem_load(ea + 3);
-          let mspd = if ek == 2 { 64 } else { if ek == 3 { 54 } else { 44 } };
+          let mspd = if ek == 2 { 68 } else { if ek == 3 { 54 } else { 44 } };
           if dist > 1650 && dist > 0 {
             let sx = (dx * mspd) / dist;
             let sz = (dz * mspd) / dist;
@@ -1753,14 +1870,21 @@ export fn step_fps(
 
           let cd = mem_load(ea + 6) - 1;
           if cd <= 0 {
-            if dist < 13500 && abs_val(foot_y - ey) < 2400 {
+            // Sword-wielding Crimson Knights (`ek == 2`) must close to melee/lunge range (`< 2800mm`),
+            // AND EVERY monster attack STRICTLY requires unobstructed 3D Line-of-Sight (`has_los`)!
+            // Hiding behind a fluted pillar, wall, archway, or terrace completely blocks enemy fire!
+            let max_atk_dist = if ek == 2 { 2800 } else { if ek == 3 { 11500 } else { 13000 } };
+            if has_los && dist < max_atk_dist && abs_val(foot_y - ey) < 2600 {
               mem_store(19, mem_load(19) | 8);
+              if ek != 2 {
+                spawn_burst_particles(ex, ey + 1250, ez, 0);
+              } else { () };
               if (next_rand() & 3) != 0 {
-                let mdmg = if ek == 3 { 16 } else { if ek == 2 { 11 } else { 7 } };
+                let mdmg = if ek == 3 { 16 } else { if ek == 2 { 14 } else { 7 } };
                 damage_player(mdmg);
               } else { () };
             } else { () };
-            mem_store(ea + 6, if ek == 3 { 42 } else { 54 });
+            mem_store(ea + 6, if ek == 3 { 44 } else { if ek == 2 { 38 } else { 56 } });
           } else {
             mem_store(ea + 6, cd);
           };
@@ -1897,6 +2021,12 @@ export fn set_camera_pose(x: i64, y: i64, z: i64, yaw: i64, pitch: i64) -[Mem, G
   mem_store(4, yaw & 4095);
   mem_store(5, clamp_pitch(pitch));
   mem_store(6, y - 1680);
+  mem_store(7, 0);
+  mem_store(27, 1);
   build_dynamic_scene();
   do Gpu.submit(mem_load(20), mem_load(21));
+}
+
+export fn check_los_3d(x0: i64, y0: i64, z0: i64, x1: i64, y1: i64, z1: i64) -[Mem]-> i64 {
+  has_line_of_sight_3d(x0, y0, z0, x1, y1, z1)
 }

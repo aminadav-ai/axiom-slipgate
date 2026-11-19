@@ -400,6 +400,7 @@ let mouseYawAccum = 0;
 let mousePitchAccum = 0;
 let fireQueued = 0;
 let jumpQueued = 0;
+let restartQueued = false;
 let mouseDownFire = false;
 let scrubbing = false;
 let soundEnabled = true;
@@ -557,8 +558,17 @@ window.addEventListener('keydown', (e) => {
     e.preventDefault();
   }
   ensureAudio();
-  if (toks.includes('Space')) fireQueued = 1;
-  if (toks.includes('ShiftLeft') || toks.includes('ShiftRight')) jumpQueued = 1;
+  if (toks.includes('KeyR')) {
+    e.preventDefault();
+    restartQueued = true;
+    return;
+  }
+  if (toks.includes('Space') || toks.includes('ShiftLeft') || toks.includes('ShiftRight')) {
+    jumpQueued = 1;
+  }
+  if (toks.includes('ControlLeft') || toks.includes('ControlRight') || toks.includes('KeyF')) {
+    fireQueued = 1;
+  }
   toks.forEach((t) => keys.add(t));
 }, { capture: true });
 
@@ -877,11 +887,11 @@ async function boot() {
     if (state === 1) {
       overlayBanner.hidden = false;
       overlayTitle.textContent = 'ELDER SLIPGATE REACHED — CITADEL CONQUERED!';
-      overlaySub.textContent = `Monsters Slain: ${kills}/10 • Score: ${score} • Click Restart or Rewind`;
+      overlaySub.textContent = `Monsters Slain: ${kills}/10 • Score: ${score} • Press [R] to Restart Instantly`;
     } else if (state === 2) {
       overlayBanner.hidden = false;
       overlayTitle.textContent = 'YOU FELL IN THE CITADEL';
-      overlaySub.textContent = 'Drag the Time-Travel Slider below to rewind before death, or Restart!';
+      overlaySub.textContent = 'Press [R] to Restart Instantly (no Esc needed) — or drag Time-Travel Slider below!';
     } else {
       overlayBanner.hidden = true;
     }
@@ -889,6 +899,18 @@ async function boot() {
     const snapCount = Math.max(1, ex.get_snap_count());
     rewindSlider.max = String(Math.max(1, snapCount - 1));
     syncSliderVars();
+  }
+
+  function resetLevelNow() {
+    ensureAudio();
+    exitScrubMode();
+    restartQueued = false;
+    fireQueued = 0;
+    jumpQueued = 0;
+    const seed = (Date.now() & 0x7fffffff) || 1996;
+    ex.init_game(seed);
+    uploadStaticWorldVbo();
+    renderGpuScene();
   }
 
   btnSound.addEventListener('click', () => {
@@ -899,12 +921,7 @@ async function boot() {
   });
 
   btnReset.addEventListener('click', () => {
-    ensureAudio();
-    exitScrubMode();
-    const seed = (Date.now() & 0x7fffffff) || 1996;
-    ex.init_game(seed);
-    uploadStaticWorldVbo();
-    renderGpuScene();
+    resetLevelNow();
   });
 
   rewindSlider.addEventListener('input', () => {
@@ -934,7 +951,9 @@ async function boot() {
   let fpsTimer = performance.now();
 
   function frame(now) {
-    if (!scrubbing) {
+    if (restartQueued || (ex.get_state() !== 0 && keys.has('Enter'))) {
+      resetLevelNow();
+    } else if (!scrubbing) {
       const pointerLocked = document.pointerLockElement === canvas;
       const fwd = (keys.has('KeyW') || keys.has('ArrowUp') || keys.has('Numpad8') ? 1 : 0)
                 - (keys.has('KeyS') || keys.has('ArrowDown') || keys.has('Numpad2') ? 1 : 0);
@@ -945,17 +964,17 @@ async function boot() {
                    - (keys.has('KeyA') || (pointerLocked && arrowLeft) ? 1 : 0);
       const keyYaw = (((!pointerLocked && arrowRight) || keys.has('KeyE') ? 1 : 0)
                    - ((!pointerLocked && arrowLeft) || keys.has('KeyQ') ? 1 : 0)) * 34;
-      const keyPitch = ((keys.has('PageUp') || keys.has('KeyR') ? 1 : 0)
-                     - (keys.has('PageDown') || keys.has('KeyF') ? 1 : 0)) * 18;
+      const keyPitch = ((keys.has('PageUp') ? 1 : 0)
+                     - (keys.has('PageDown') ? 1 : 0)) * 18;
 
       const mouseYaw = Math.trunc(mouseYawAccum);
       mouseYawAccum -= mouseYaw;
       const mousePitch = Math.trunc(mousePitchAccum);
       mousePitchAccum -= mousePitch;
 
-      const jump = jumpQueued || keys.has('ShiftLeft') || keys.has('ShiftRight') ? 1 : 0;
+      const jump = jumpQueued || keys.has('Space') || keys.has('ShiftLeft') || keys.has('ShiftRight') ? 1 : 0;
       jumpQueued = 0;
-      const shoot = fireQueued || mouseDownFire || keys.has('Space') ? 1 : 0;
+      const shoot = fireQueued || mouseDownFire || keys.has('ControlLeft') || keys.has('ControlRight') || keys.has('KeyF') ? 1 : 0;
       fireQueued = 0;
 
       ex.step_fps(fwd, strafe, keyYaw + mouseYaw, keyPitch + mousePitch, jump, shoot);

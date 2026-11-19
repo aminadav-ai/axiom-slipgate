@@ -67,6 +67,36 @@ assert(snaps >= 25, `Expected >=25 combat snapshots, got ${snaps}`);
 ex.rewind_combat(24);
 assert(ex.get_tick() <= tickAt20 + 8, 'Rewind restores earlier combat tick');
 
+// 7. Verify Exact 3D Line-of-Sight Occlusion Behind Pillars & Walls!
+ex.init_game(1996);
+// Clear open canyon line-of-sight from Grunt #0 (-1200, -6800) to open floor (0, 1000)
+assert.equal(ex.check_los_3d(-1200, 1150, -6800, 0, 1480, 1000), 1, 'Open canyon must have clear LOS');
+// Blocked by Monumental Fluted Pillar #1 at (3600, -1500) when player hides at (4250, -200)!
+assert.equal(ex.check_los_3d(-1200, 1150, -6800, 4250, 1480, -200), 0, 'Fluted stone pillar must block monster LOS');
+// Blocked by Gothic Hall Entrance Wall at Z=-18000 when hiding behind (-5000, -16500) from Grunt #2 (-2300, -23200)!
+assert.equal(ex.check_los_3d(-2300, 2950, -23200, -5000, 1480, -16500), 0, 'Solid stone wall must block monster LOS');
+
+// Place player behind Pillar #1 and step 90 ticks: zero damage through the pillar!
+ex.set_camera_pose(4250, 1680, -200, 0, 0);
+for (let k = 0; k < 90; k++) {
+  ex.step_fps(0, 0, 0, 0, 0, 0);
+}
+assert.equal(ex.get_health(), 100, 'Hiding behind pillar must block 100% of enemy shots');
+assert.equal(ex.get_armor(), 50, 'Armor must remain 50 behind solid pillar cover');
+
+// 8. Verify Spacebar Jump onto Left Stone Terrace (Y = 820) & Flanking Side Terrace (Y = 2200)!
+ex.set_camera_pose(-3150, 1680, -2000, 3072, 0); // Facing -X toward Left Stone Terrace
+for (let k = 0; k < 24; k++) {
+  ex.step_fps(1, 0, 0, 0, k === 0 ? 1 : 0, 0);
+}
+assert(ex.get_cam_y() >= 1680 + 820 - 50, `Expected player to jump onto 820mm Left Terrace, got cam_y=${ex.get_cam_y()}`);
+
+ex.set_camera_pose(-2500, 1680 + 1800, -16500, 3072, 0); // Top of canyon stairs facing -X toward 2200mm Flanking Side Terrace
+for (let k = 0; k < 24; k++) {
+  ex.step_fps(1, 0, 0, 0, k === 0 ? 1 : 0, 0);
+}
+assert(ex.get_cam_y() >= 1680 + 2200 - 50, `Expected player to jump onto 2200mm Flanking Side Terrace, got cam_y=${ex.get_cam_y()}`);
+
 console.log(JSON.stringify({
   status: 'PASS',
   wasmBytes: wasmBytes.length,
